@@ -1,0 +1,26 @@
+Version 0.94   - 02 March 2009
+  * Fixed Bug on sshcommand on switch on degraded shell. No timeout for long commands.
+  * improving telnetcommand on cisco switch.
+  * added -d (--dir) option
+  * changing the regular expression for recognizing brocade and Mcdata switch
+  * removing the cleaning of output of commands
+  * Changing the beginning of the server thread
+
+Version 0.93   - 16 February 2009
+  * Fixed Bug on Brocade switch that runs Fabric OS > 6
+  * Add --nat option for dealing with NAT address of the server
+  * Building the Switch class in order to have an oriented object code
+  * Add --timeout option for dealing with the different switch's timeout
+  * Add script to setup the module
+  * Using pyftpdlib version 0.5.1
+  * Using py2exe version 0.6.9 for building the windows executable
+
+Version 0.9     - 25 November 2008
+  * Correcting Bugs
+  * Add a generator of RSA keys for the SSH server
+
+Version 0.5     - 13 November 2008
+  * Correcting Bugs
+
+Version 0.1     - 2 November 2008
+  * Initial release
