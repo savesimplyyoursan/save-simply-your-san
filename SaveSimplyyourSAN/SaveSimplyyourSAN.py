@@ -645,7 +645,7 @@ class Switch(object):
 	    tn = telnetlib.Telnet(self.address)
             tn.read_until(self.banner, self.timeout)
         except:
-            print "***TelnetConnect*** Telnet connection impossible to the host :" + switch.address
+            print "***TelnetConnect*** Telnet connection impossible to the host :" + self.address
             return False
         # sending username and password to the switch
         try:
