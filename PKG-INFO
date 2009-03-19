@@ -1,6 +1,6 @@
 Metadata-Version: 1.0
 Name: SaveSimplyyourSan
-Version: 0.93
+Version: 0.95
 Summary: A simple tool which make the configuration's backup of your SAN switches simple and easy. It actually works with Cisco, Brocade and McData switches and allows you to get the configuration of your switch by SCP or FTP. You don't need to install or configure a SSH or a FTP server on your computer.
 Home-page: http://code.google.com/p/save-simply-your-san/
 Author: Anthony FOIGNANT

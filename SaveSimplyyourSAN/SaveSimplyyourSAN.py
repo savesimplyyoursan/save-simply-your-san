@@ -337,8 +337,7 @@ class Switch(object):
 
         try:
             # Connecting to hostname, on port 22 (SSH), username and password defined. Set the timeout and disable the connection to the local agent. An authentification with private key is also tried
-            #client.connect(switch.address, port=22, username=switch.user, password=switch.password, pkey=None, key_filename=None, timeout=switch.timeout, allow_agent=False, look_for_keys=False)
-            client.connect(self.address, port=22, username=self.user, password=self.password, pkey=self.ssh_key, key_filename=None, timeout=self.timeout, allow_agent=False, look_for_keys=True)
+            client.connect(self.address, port=22, username=self.user, password=self.password, pkey=None, key_filename=self.ssh_key, timeout=self.timeout, allow_agent=False, look_for_keys=True)
         except BadHostKeyException:
             print '***SSHConnect*** Bad SSH host key ! Closing connection...'
             client.close()
@@ -962,286 +961,6 @@ class Switch(object):
         print "Successfully saved the configuration in the file :" + self.file
         sys.exit(0)
 
-#####################"
-    def ParseUptime(self, input):
-        """
-        ParseUptime(switch, input) -> Boolean
-        Parse to find an uptime (status, description)
-
-        @param input: type of check
-        @type input: bool
-
-        @rtype: bool
-        """
-        lines = input.splitlines()
-	if self.type == "cisco":
-            regexp = re.compile(r".*uptime:\s+(\d+)\sdays,\s(\d+)\shours,\s(\d+)\sminutes,\s(\d+)\sseconds$", re.IGNORECASE)
-	    system_line = [line for line in lines if line.startswith("System uptime")]
-	    kernel_line = [line for line in lines if line.startswith("Kernel uptime")]
-	    active_line = [line for line in lines if line.startswith("Active supervisor uptime")]
-
-	    if (not system_line) or (not kernel_line) or (not active_line):
-                return False
-            sys_matchreg = [regexp.match(line) for line in system_line]
-	    kern_matchreg = [regexp.match(line) for line in kernel_line]
-	    active_matchreg = [regexp.match(line) for line in active_line]
-	    if (not sys_matchreg) or (not kern_matchreg) or (not active_matchreg):
-                return False
-	    days, hours, minutes, seconds = sys_matchreg[0].group(1), sys_matchreg[0].group(2), sys_matchreg[0].group(3), sys_matchreg[0].group(4)
-	    self.sys_uptime = int(minutes) + 60 * int(hours) + 1440 * int(days)
-	    days, hours, minutes, seconds = kern_matchreg[0].group(1), kern_matchreg[0].group(2), kern_matchreg[0].group(3), kern_matchreg[0].group(4)
-	    self.kernel_uptime = int(minutes) + 60 * int(hours) + 1440 * int(days)
-	    days, hours, minutes, seconds = active_matchreg[0].group(1), active_matchreg[0].group(2), active_matchreg[0].group(3), active_matchreg[0].group(4)
-	    self.active_uptime = int(minutes) + 60 * int(hours) + 1440 * int(days)
-	    return True
-	elif self.type == "brocade":
-            return False
-	elif self.type == "mcdata":
-            return False
-	else:
-	    return False
-
-######################
-    def ParseEnvironment(self, input):
-        """
-        ParseEnvironment(switch, input) -> Boolean
-        Parse to find an uptime (status, description)
-
-        @param input: type of check
-        @type input: bool
-
-        @rtype: bool
-        """
-        lines = input.splitlines()
-
-	if self.type == "cisco":
-	    self.fan_list = []
-	    self.clock_list = []
-	    self.temp_list = []
-	    self.ps_list = []
-	    self.module_list = []
-	    fan_flag = False
-	    clock_flag = False
-	    temp_flag = False
-	    ps_flag = False
-	    module_flag = False
-	    fan_regexp = re.compile(u"^([^\s]+)\s+(.*)\s+([^\s]+)\s+([^\s]+)", re.IGNORECASE)
-	    clock_regexp = re.compile(u"^([^\s]+)\s+(.*)\s+([^\s]+)\s+([^\s]+)", re.IGNORECASE)
-	    temp_regexp = re.compile(u"^([^\s]+)\s+([^\s]+)\s+([^\s]+)\s+([^\s]+)\s+([^\s]+)\s+([^\s]+)", re.IGNORECASE)
-	    ps_regexp = re.compile(u"^([^\s]+)\s+([^\s]*)\s+([^\s]+)\s+([^\s]+)\s+([^\s]+)", re.IGNORECASE)
-	    module_regexp = re.compile(u"^([^\s]+)\s+([^\s]*)\s+[^\s]+\s+[^\s]+\s+[^\s]+\s+[^\s]+\s+([^\s]+)", re.IGNORECASE)
-            for line in lines:
-		#print fan_flag
-		if line.startswith("Fan:"):
-                    fan_flag = True
-		if line.startswith("Clock:"):
-                    clock_flag = True
-		if line.startswith("Temperature:"):
-                    temp_flag = True
-		if line.startswith("Power Supply:"):
-                    ps_flag = True
-		    temp_flag = False
-		if line.startswith("Mod "):
-                    module_flag = True
-                if line is "":
-                    fan_flag = False
-		    clock_flag = False
-		    ps_flag = False
-		    module_flag = False
-		if fan_flag:
-		    matchreg = fan_regexp.match(line)
-	            if matchreg:
-	                fan = name, model, hw, status = matchreg.group(1), matchreg.group(2), matchreg.group(3), matchreg.group(4)
-			if not "Status" in status:
-			    self.fan_list.append(fan)
-		if clock_flag:
-		    clock_list = line.split('  ')
-		    clock_list = [list for list in clock_list if not list.startswith('---') ]
-		    if ( len(clock_list) > 1 ) and ( not clock_list[0].startswith(u"Clock") ):
-		        #if (not clock_list[0].startswith(u"Clock")):
-		            clock = name, model, hw, status = clock_list[0], clock_list[1], clock_list[2], clock_list[-1]
-		            self.clock_list.append(clock)
-
-		    """
-
-		    matchreg = clock_regexp.match(line)
-	            if matchreg:
-	                clock = name, model, hw, status = matchreg.group(1), matchreg.group(2), matchreg.group(3), matchreg.group(4)
-			if not "Status" in status:
-			    self.clock_list.append(clock)
-		    """
-		if temp_flag:
-		    matchreg = temp_regexp.match(line)
-	            if matchreg:
-	                temperature = module, name, MajorThresh, MinorThresh, CurTemp, status = matchreg.group(1), matchreg.group(2), matchreg.group(3), matchreg.group(4), matchreg.group(5), matchreg.group(6)
-			if not "Status" in status:
-			    self.temp_list.append(temperature)
-		if ps_flag:
-		    matchreg = ps_regexp.match(line)
-	            if matchreg:
-	                ps = number, model, Watts, Amp, status = matchreg.group(1), matchreg.group(2), matchreg.group(3), matchreg.group(4), matchreg.group(5)
-			if not "Status" in status:
-			    self.ps_list.append(ps)
-		if module_flag:
-		    matchreg = module_regexp.match(line)
-	            if matchreg:
-	                module = number, model, status = matchreg.group(1), matchreg.group(2), matchreg.group(3)
-			if not ("Status" in status or "---" in status):
-			    #if not "---" in status:
-			    self.module_list.append(module)
-	    if not matchreg:
-                return False
-            else:
-	        return True
-	elif self.type == "brocade":
-            return False
-	elif self.type == "mcdata":
-            return False
-	else:
-	    return False
-
-#####################
-    def ParseResources(self, input):
-        """
-        ParseResources(switch, input) -> Boolean
-        Parse to find an uptime (status, description)
-
-        @param input: type of check
-        @type input: bool
-
-        @rtype: bool
-        """
-        lines = input.splitlines()
-	cpu_flag = False
-	mem_flag = False
-	proc_flag = False
-	if self.type == "cisco":
-	    cpu_line = [line for line in lines if line.startswith("CPU")]
-	    mem_line = [line for line in lines if line.startswith("Memory")]
-	    proc_line = [line for line in lines if line.startswith("Processes")]
-	    
-	    if (not cpu_line) or (not mem_line) or (not proc_line):
-                return False
-            cpu_regexp = re.compile(u"^CPU\sstates\s+:\s+(\d+).*\s+(\d+).*\s+(\d+).*\sidle", re.IGNORECASE)
-	    mem_regexp = re.compile(u"^Memory\susage.*\s+(\d+).*\s+(\d+).*\s+(\d+).*\sfree", re.IGNORECASE)
-	    proc_regexp = re.compile(u"^Processes\s+:\s+(\d+).*\s+(\d+)\srunning", re.IGNORECASE)
-            proc_matchreg = [proc_regexp.search(line) for line in proc_line]
-	    cpu_matchreg = [cpu_regexp.match(line) for line in cpu_line]
-	    mem_matchreg = [mem_regexp.match(line) for line in mem_line]
-	    if (not proc_matchreg) or (not cpu_matchreg) or (not mem_matchreg):
-                return False
-            self.cpu = user, kernel, idle = cpu_matchreg[0].group(1), cpu_matchreg[0].group(2), cpu_matchreg[0].group(3)
-	    self.mem = total, used, free = mem_matchreg[0].group(1), mem_matchreg[0].group(2), mem_matchreg[0].group(3)
-	    self.proc = total, running = proc_matchreg[0].group(1), proc_matchreg[0].group(2)
-            return True
-	elif self.type == "brocade":
-            return False
-	elif self.type == "mcdata":
-            return False
-	else:
-	    return False
-
-#####################
-    def ParseInterfaces(self, input):
-        """
-        ParseInterfaces(switch, input) -> Boolean
-        Parse to find an uptime (status, description)
-
-        @param input: type of check
-        @type input: bool
-
-        @rtype: bool
-        """
-        lines = input.splitlines()
-	if self.type == "cisco":
-	    sfp_flag = False
-	    ip_flag = False
-	    fcip_flag = False
-	    int_flag = False
-	    self.int_list = []
-	    self.sfp_list = []
-	    self.ip_list = []
-	    self.fcip_list = []
-	    for line in lines:
-		#print sfp_flag
-		if "SFP" in line:
-                    sfp_flag = True
-		if "MTU" in line:
-                    ip_flag = True
-		if "fcip" in line:
-                    fcip_flag = True
-		if "Interface" in line:
-                    int_flag = True
-                if line is "":
-                    sfp_flag = False
-		    ip_flag = False
-		    fcip_flag = False
-		    int_flag = False
-		if sfp_flag:
-		    if "Mode" in line:
-			continue
-		    if line.startswith('---'):
-			continue
-		    if line.startswith(u'Interface'):
-			continue
-		    words = line.split()
-                    int_sfp = name, admin_mode, status, oper_mode = words[0], words[2], words[4], words[6]
-		    self.sfp_list.append(int_sfp)
-		    interface = name, status = words[0], words[4]
-		    self.int_list.append(interface)
-		    #print interface
-		if ip_flag:
-		    if "Channel" in line:
-			continue
-		    if line.startswith('---'):
-			continue
-		    if line.startswith(u'Interface'):
-			continue
-		    words = line.split()
-                    int_ip = name, status, address = words[0], words[1], words[2]		    
-		    self.ip_list.append(int_ip)
-		    interface = name, status = words[0], words[1]
-		    self.int_list.append(interface)
-		    #print interface
-		if fcip_flag:
-		    if "Mode" in line:
-			continue
-		    if line.startswith('---'):
-			continue
-		    if line.startswith(u'Interface'):
-			continue
-		    words = line.split()
-                    int_fcip = name, admin_mode, status, oper_mode, Eth = words[0], words[2], words[4], words[5], words[7]
-		    self.fcip_list.append(int_fcip)
-		    interface = name, status = words[0], words[4]
-		    self.int_list.append(interface)
-		    #print interface
-                
-		if int_flag:
-		    if u"Gbps" in line:
-			continue
-		    if u"Mode" in line:
-			continue
-		    if line.startswith('---'):
-			continue
-		    if line.startswith(u'Interface'):
-			continue
-		    words = line.split()
-		    if len(words) == 3:
-			interface = name, status = words[0], words[1]
-			self.int_list.append(interface)
-			#print interface
-                
-
-	    if not self.int_list:
-		return False
-            return True
-	elif self.type == "brocade":
-            return False
-	elif self.type == "mcdata":
-            return False
-	else:
-	    return False
 
 ################################################################
 # End of the Switch's Class
@@ -1595,241 +1314,6 @@ class FTPServer(threading.Thread):
 
 
 ################################################################
-## CheckUptime (paramiko)
-################################################################
-def CheckUptime(switch, warning_threshold, critical_threshold):
-    """
-    CheckNagios(self, warning_threshold, critical_threshold)
-    Check a switch's uptime for Nagios.
-
-    @param check_type: type of check
-    @type check_type: str
-
-    """
-    STATE_OK = 0
-    STATE_WARNING = 1
-    STATE_CRITICAL = 2
-    STATE_UNKNOWN = 3
-    def output(code, msg=''):
-	outfp = sys.stdout
-	if msg:
-	    print >> outfp, msg
-	sys.exit(code)
-    
-    uptime = switch.GetCommand(switch.uptime_command)
-    #env = switch.GetCommand(switch.environment_command)
-    #resources = switch.GetCommand(switch.resources_command)
-    #interfaces = switch.GetCommand(switch.interfaces_command)
-    switch.client.close()
-    if not switch.ParseUptime(uptime):
-	output(STATE_UNKNOWN, "UNKNOWN : incorrect switch output : " + str(uptime))
-    else:
-        if ( switch.sys_uptime <= int(critical_threshold) ) and ( switch.kernel_uptime <= int(critical_threshold) ) and ( switch.active_uptime <= int(critical_threshold) ):
-	    output(STATE_CRITICAL, "CRITICAL : Device has rebooted ! System Uptime: " + str(switch.sys_uptime) +
-		    " minutes. Kernel uptime: "+ str(switch.kernel_uptime) +
-		    " minutes. Active supervisor uptime: "+ str(switch.active_uptime) +
-		    " minutes.")
-        elif ( switch.sys_uptime <= int(warning_threshold) ) and ( switch.kernel_uptime <= int(warning_threshold) ) and ( switch.active_uptime <= int(warning_threshold) ):
-	    output(STATE_WARNING, "WARNING : Device has rebooted ! Uptime : " + str(switch.sys_uptime) +
-		    " minutes. Kernel uptime: "+ str(switch.kernel_uptime) +
-		    " minutes. Active supervisor uptime: "+ str(switch.active_uptime) +
-		    " minutes.")
-	else:
-            output(STATE_OK, "OK : Device uptime : " + str(switch.sys_uptime) +
-		    " minutes. Kernel uptime: "+ str(switch.kernel_uptime) +
-		    " minutes. Active supervisor uptime: "+ str(switch.active_uptime) +
-		    " minutes.")
-
-################################################################
-## CheckEnv (paramiko)
-################################################################
-def CheckEnv(switch, warning_threshold, critical_threshold):
-    """
-    CheckEnv(self, warning_threshold, critical_threshold)
-    Check a switch's environment for Nagios.
-
-    @param check_type: type of check
-    @type check_type: str
-
-    """
-    STATE_OK = 0
-    STATE_WARNING = 1
-    STATE_CRITICAL = 2
-    STATE_UNKNOWN = 3
-    def output(code, msg=''):
-	outfp = sys.stdout
-	if msg:
-	    print >> outfp, msg
-	sys.exit(code)
-    #uptime = switch.GetCommand(switch.uptime_command)
-    env = switch.GetCommand(switch.environment_command)
-    #resources = switch.GetCommand(switch.resources_command)
-    #interfaces = switch.GetCommand(switch.interfaces_command)
-    switch.client.close()
-    if not switch.ParseEnvironment(env):
-	output(STATE_UNKNOWN, "UNKNOWN : incorrect switch output : " + str(env))
-    else:
-	nb_failed = 0
-	msg = []
-	for (name, model, hw, status) in switch.fan_list:
-	    if not str(status).startswith("ok") :
-	        nb_failed += 1
-		msg.append("Fan "+str(name) + " is in status: " + str(status) + " (model: "+str(model)+ ") ! ")
-	    else:
-		msg.append("Fan "+str(name) + " is: " + str(status) + ". ")
-	for (name, model, hw, status) in switch.clock_list:
-	    if str(status).startswith("ok") or "not present" in status:
-		msg.append("Clock "+str(name) + " is: " + str(status) + ". ")
-	    else:
-		nb_failed += 1
-		msg.append("Clock "+str(name) + " is in status: " + str(status) + " ! ")
-	for (module, name, MajorThresh, MinorThresh, CurTemp, status) in switch.temp_list:
-	    if not str(status).startswith("ok") :
-	        nb_failed += 1
-		msg.append("Temp "+str(name) + ", Module "+ str(module) +" is in status: " + str(status) + " ! ")
-	    else:
-		msg.append("Temp "+str(name) + ", Module "+ str(module) +" is: " + str(status) + ". ")
-	for (number, model, Watts, Amp, status) in switch.ps_list:
-	    if not str(status).startswith("ok") :
-	        nb_failed += 1
-		msg.append("Power Supply " + str(number) + " is in status: " + str(status) + " ! ")
-	    else:
-		msg.append("Power Supply " + str(number) + " is: " + str(status) + ". ")
-	for (number, model, status) in switch.module_list:
-	    if not str(status).startswith("powered-up") :
-	        nb_failed += 1
-		msg.append("Module " + str(number) + " is in status: " + str(status) + " ! ")
-	    else:
-		msg.append("Module " + str(number) + " is: " + str(status) + ". ")
-	msg = ''.join(msg)
-	if ( nb_failed >= int(critical_threshold) ):
-	    output(STATE_CRITICAL, "CRITICAL: " + str(msg))
-        elif ( nb_failed >= int(warning_threshold) ):
-	    output(STATE_WARNING, "WARNING: " + str(msg))
-	else:
-            output(STATE_OK, "OK: " + str(msg))
-
-
-################################################################
-## CheckResources (paramiko)
-################################################################
-def CheckResources(switch, warning_threshold, critical_threshold):
-    """
-    CheckResources(self, warning_threshold, critical_threshold)
-    Check a switch's resources cpu and mem for Nagios.
-
-    @param check_type: type of check
-    @type check_type: str
-
-    """
-    STATE_OK = 0
-    STATE_WARNING = 1
-    STATE_CRITICAL = 2
-    STATE_UNKNOWN = 3
-    def output(code, msg=''):
-	outfp = sys.stdout
-	if msg:
-	    print >> outfp, msg
-	sys.exit(code)
-    #uptime = switch.GetCommand(switch.uptime_command)
-    #env = switch.GetCommand(switch.environment_command)
-    resources = switch.GetCommand(switch.resources_command)
-    #interfaces = switch.GetCommand(switch.interfaces_command)
-    switch.client.close()
-    if not switch.ParseResources(resources):
-	output(STATE_UNKNOWN, "UNKNOWN : incorrect switch output: " + str(resources))
-    else:
-	crit_flag = False
-	warn_flag = False
-	msg = ""
-	(total, used, free) = switch.mem
-	mem_used_perc = int(100 * ( float(used) / float(total) ))
-	(user, kernel, idle) = switch.cpu
-	cpu_used_perc = int(user) + int(kernel)
-        if ( int(mem_used_perc) >= int(critical_threshold) ):
-	    crit_flag = True
-        if ( int(cpu_used_perc) >= int(critical_threshold) ):
-	    crit_flag = True
-        if ( int(mem_used_perc) >= int(warning_threshold) ):
-	    warn_flag = True
-        if ( int(cpu_used_perc) >= int(warning_threshold) ):
-	    warn_flag = True
-        else:
-	    (total, running) = switch.proc
-	    msg = "CPU usage: " + str(cpu_used_perc) + " %. Memory usage: "+ str(mem_used_perc) + " %. Total Processes: " + str(total) + ". " + str(running) + " running."
-        #print msg
-	if crit_flag:
-	    output(STATE_CRITICAL, "CRITICAL: " + str(msg))
-        elif warn_flag:
-	    output(STATE_WARNING, "WARNING: " + str(msg))
-	else:
-            output(STATE_OK, "OK: " + str(msg))
-
-
-################################################################
-## CheckInterfaces (paramiko)
-################################################################
-def CheckInterfaces(switch, warning_threshold, critical_threshold):
-    """
-    CheckInterfaces(self, warning_threshold, critical_threshold)
-    Check a switch's interfaces for Nagios.
-
-    @param check_type: type of check
-    @type check_type: str
-
-    """
-    STATE_OK = 0
-    STATE_WARNING = 1
-    STATE_CRITICAL = 2
-    STATE_UNKNOWN = 3
-    def output(code, msg=''):
-	outfp = sys.stdout
-	if msg:
-	    print >> outfp, msg
-	sys.exit(code)
-    #uptime = switch.GetCommand(switch.uptime_command)
-    #env = switch.GetCommand(switch.environment_command)
-    #resources = switch.GetCommand(switch.resources_command)
-    interfaces = switch.GetCommand(switch.interfaces_command)
-    switch.client.close()
-    if not switch.ParseInterfaces(interfaces):
-	output(STATE_UNKNOWN, "UNKNOWN : incorrect switch output: " + str(interfaces))
-    else:
-	crit_flag = False
-	warn_flag = False
-	msg = []
-	nb_failed = 0
-	failed_list = []
-	for (name, status) in switch.int_list:
-	    if not status.startswith('up') and not status.startswith('down') and not status.startswith('trunking'):
-	        failed_list.append((name, status))
-        #print failed_list
-        if ( len(failed_list) >= int(critical_threshold) ):
-	    crit_flag = True	    
-	    for (name, status) in failed_list:
-		msg.append("Interface: " + str(name) + " is in status: " + str(status) + " !")
-
-        if ( len(failed_list) >= int(warning_threshold) ):
-	    warn_flag = True	    
-	    for (name, status) in failed_list:
-		msg.append("Interface: " + str(name) + " is in status: " + str(status)+ " !")
-
-        else:
-	    msg.append("All interfaces OK: ")
-	    for (name, status) in switch.int_list:
-		msg.append("Interface: " +str(name) + " is: " + str(status) + ". ")
-	    #print failed_list
-	    for (name, status) in failed_list:
-	        msg.append("Failed interfaces are: " + str(name) + " in status: " + str(status) + " !")
-        msg = ''.join(msg)
-	if crit_flag:
-	    output(STATE_CRITICAL, "CRITICAL: " + str(msg))
-        elif warn_flag:
-	    output(STATE_WARNING, "WARNING: " + str(msg))
-	else:
-            output(STATE_OK, "OK: " + str(msg))	
-
-################################################################
 ## SaveSimplyyourSan() Function
 ## 
 ################################################################
@@ -1856,9 +1340,6 @@ def SaveSimplyyourSAN():
 	parser.add_option("-d", "--debug", help="The debug level. Values are : yes or no (no by default).", type="string", action="store", dest="debug", default="no")
 	parser.add_option("--dir", help="store the files in the directory specified. If non value is provided, the files are stored in a directory with the switch's name. If you provide the value byday, the files are stored in a directory named by day. Values are : 'directory' or 'byday'.", type="string", action="store", dest="dir", default="no")
 	parser.add_option("-k", "--host-key", help="the Switch's SSH private key used for SSH authentication.", type="string", action="store", dest="key")
-	parser.add_option("--check", help="For Nagios check (cisco): uptime, env, interfaces, resources", type="string", action="store", dest="check")
-	parser.add_option("--warning", help="For Nagios check (cisco): warning threshold value", type="string", action="store", dest="warning")
-	parser.add_option("--critical", help="For Nagios check (cisco): critical threshold value", type="string", action="store", dest="critical")
 	(options, args) = parser.parse_args()
 
 	# Generation of the SSH Server's RSA key
@@ -1867,20 +1348,19 @@ def SaveSimplyyourSAN():
 
         # verifying mandatory arguments
 	if not options.ip:
-		print '*** You must provide an IP address of a switch with -i !'
-		sys.exit(1)
-	if not options.user:
-		print '*** You must provide a user with -u !'
-		sys.exit(1)
-	if not options.password:
-		print '*** You must provide a password with -p !'
-		sys.exit(1)
+	    print '*** You must provide an IP address of a switch with -i !'
+	    sys.exit(1)
+	if not options.user and not options.key:
+	    print '*** You must provide a user with -u !'
+	    sys.exit(1)
+	if not options.password and not options.key:
+	    print '*** You must provide a password with -p !'
+	    sys.exit(1)
 	if not options.switch:
-		print '*** You must provide a type of switch with -s !'
-		sys.exit(1)
+	    print '*** You must provide a type of switch with -s !'
+	    sys.exit(1)
 
         #initialising switch object
-        #switch = Switch(options.ip, options.switch, options.user, options.password, options.client, options.transfert, float(options.timeout), options.interface, options.nat, options.command, options.dir)
         switch = Switch(options.ip, options.switch, options.user, options.password, options.client, options.transfert, float(options.timeout), options.interface, options.nat, options.dir, options.key)
 	if options.command:
 	    switch.Connect()
@@ -1889,20 +1369,6 @@ def SaveSimplyyourSAN():
 	    switch.SaveFileInDirectory(output, filename, switch.name)
 	    switch.client.close()
 	    sys.exit(0)
-
-	if options.check:
-	    switch.Connect()
-	    if options.check == "uptime":
-	        CheckUptime(switch, options.warning, options.critical)
-	    elif options.check == "env":
-	        CheckEnv(switch, options.warning, options.critical)
-	    elif options.check == "resources":
-	        CheckResources(switch, options.warning, options.critical)
-	    elif options.check == "interfaces":
-	        CheckInterfaces(switch, options.warning, options.critical)
-	    else:
-		print "*** not a possible option ! Possible values: uptime, env, resources, interfaces"
-		sys.exit(1)
 
 	# Calling the function for getting the configuration from a Mcdata switch
 	if switch.type =="mcdata":
@@ -1934,12 +1400,8 @@ def SaveSimplyyourSAN():
 		    sys.exit(1)
                 switch.Connect()
 		if switch.connection_type == "ssh":
-                    #ssh_client = SSHConnect(switch)
-		    #switch.SSHSave(ssh_client, client_queue, server_queue, server_thread)
 		    switch.SSHSave(server_queue, server_thread)
                 elif switch.connection_type == "telnet":
-                    #telnet_client = TelnetConnect(switch)
-		    #switch.TelnetSave(telnet_client, client_queue, server_queue, server_thread)
 		    switch.TelnetSave(server_queue, server_thread)
 		else:
 		    print "*** Not a good type of client ! Possible values are ssh or telnet"

@@ -20,7 +20,7 @@ from distutils.core import setup
 ###################
 
 setup(name = 'SaveSimplyyourSan',
-      version = '0.93',
+      version = '0.95',
       license = 'GNU GPL v2',
       url = 'http://code.google.com/p/save-simply-your-san/',
       author = 'Anthony FOIGNANT',

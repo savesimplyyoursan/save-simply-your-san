@@ -1,3 +1,10 @@
+Version 0.95   - 02 March 2009
+  * changing -d option to --dir
+  * adding -d option for debugging level
+  * using logging to add a log file
+  * creating SANagios : a plugin for checking switches with commands
+  * rewrite code for improving it
+
 Version 0.94   - 02 March 2009
   * Fixed Bug on sshcommand on switch on degraded shell. No timeout for long commands.
   * improving telnetcommand on cisco switch.
