@@ -561,7 +561,7 @@ def ParseUptime(switch, input):
         sys_matchreg = [regexp.match(line) for line in system_line]
         kern_matchreg = [regexp.match(line) for line in kernel_line]
         active_matchreg = [regexp.match(line) for line in active_line]
-        if (not sys_matchreg) or (not kern_matchreg) or (not active_matchreg):
+        if (not sys_matchreg[0]) or (not kern_matchreg[0]) or (not active_matchreg[0]):
             return False
 	days, hours, minutes, seconds = sys_matchreg[0].group(1), sys_matchreg[0].group(2), sys_matchreg[0].group(3), sys_matchreg[0].group(4)
 	switch.sys_uptime = int(minutes) + 60 * int(hours) + 1440 * int(days)
@@ -571,9 +571,28 @@ def ParseUptime(switch, input):
 	switch.active_uptime = int(minutes) + 60 * int(hours) + 1440 * int(days)
 	return True
     elif switch.type == "brocade":
-        return False
+	#line = 3:08pm   up for 469 days 2 hrs 21 mins
+	regexp = re.compile(r".*\s+(\d+)\sdays\s+(\d+)\shrs\s+(\d+)\smins", re.IGNORECASE)
+	matchreg =  [regexp.match(line) for line in lines]
+        if not matchreg[0]:
+            return False
+	days, hours, minutes = matchreg[0].group(1), matchreg[0].group(2), matchreg[0].group(3)
+	switch.uptime = int(minutes) + 60 * int(hours) + 1440 * int(days)
+        return True
     elif switch.type == "mcdata":
-        return False
+	#show fru
+	#FRU       Position  State   Serial Num  Part Num             Beacon  Pwr On Hrs
+	#--------  --------  ------  ----------  -------------------  ------  ----------
+	#CTP       0         Active  E11111111   111111111            off     12662     
+	#Power     0         Active                                                     
+	#Power     1         Active     
+	regexp = re.compile(r"^CTP.*\s+(\d+).*$", re.IGNORECASE)
+	matchreg =  [regexp.match(line) for line in lines if line.startswith(u"CTP")]
+        if not matchreg[0]:
+            return False
+	hours = matchreg[0].group(1)
+	switch.uptime = 60 * int(hours)
+        return True
     else:
 	return False
 
@@ -869,7 +888,8 @@ def CheckUptime(switch, warning_threshold, critical_threshold):
     if switch.type == "cisco":
         switch.uptime_command = "show system uptime"
     elif switch.type == "brocade":
-        switch.uptime_command = "uptime"
+        #switch.uptime_command = "uptime"
+        switch.uptime_command = "switchuptime"	
     elif switch.type == "mcdata":
         switch.uptime_command = "show fru"
 
@@ -878,22 +898,36 @@ def CheckUptime(switch, warning_threshold, critical_threshold):
     if not ParseUptime(switch, uptime):
 	output(STATE_UNKNOWN, "UNKNOWN : incorrect switch output : " + str(uptime))
     else:
-        if ( switch.sys_uptime <= int(critical_threshold) ) and ( switch.kernel_uptime <= int(critical_threshold) ) and ( switch.active_uptime <= int(critical_threshold) ):
-	    output(STATE_CRITICAL, "CRITICAL : Device has rebooted ! System Uptime: " + str(switch.sys_uptime) +
-		    " minutes. Kernel uptime: "+ str(switch.kernel_uptime) +
-		    " minutes. Active supervisor uptime: "+ str(switch.active_uptime) +
-		    " minutes.")
-        elif ( switch.sys_uptime <= int(warning_threshold) ) and ( switch.kernel_uptime <= int(warning_threshold) ) and ( switch.active_uptime <= int(warning_threshold) ):
-	    output(STATE_WARNING, "WARNING : Device has rebooted ! Uptime : " + str(switch.sys_uptime) +
-		    " minutes. Kernel uptime: "+ str(switch.kernel_uptime) +
-		    " minutes. Active supervisor uptime: "+ str(switch.active_uptime) +
-		    " minutes.")
-	else:
-            output(STATE_OK, "OK : Device uptime : " + str(switch.sys_uptime) +
-		    " minutes. Kernel uptime: "+ str(switch.kernel_uptime) +
-		    " minutes. Active supervisor uptime: "+ str(switch.active_uptime) +
-		    " minutes.")
-
+        if switch.type == "cisco":
+            if ( switch.sys_uptime <= int(critical_threshold) ) and ( switch.kernel_uptime <= int(critical_threshold) ) and ( switch.active_uptime <= int(critical_threshold) ):
+	        output(STATE_CRITICAL, "CRITICAL : Device has rebooted ! System Uptime: " + str(switch.sys_uptime) +
+		        " minutes. Kernel uptime: "+ str(switch.kernel_uptime) +
+		        " minutes. Active supervisor uptime: "+ str(switch.active_uptime) +
+		        " minutes.")
+            elif ( switch.sys_uptime <= int(warning_threshold) ) and ( switch.kernel_uptime <= int(warning_threshold) ) and ( switch.active_uptime <= int(warning_threshold) ):
+	        output(STATE_WARNING, "WARNING : Device has rebooted ! Uptime : " + str(switch.sys_uptime) +
+		        " minutes. Kernel uptime: "+ str(switch.kernel_uptime) +
+		        " minutes. Active supervisor uptime: "+ str(switch.active_uptime) +
+		        " minutes.")
+	    else:
+                output(STATE_OK, "OK : Device uptime : " + str(switch.sys_uptime) +
+		        " minutes. Kernel uptime: "+ str(switch.kernel_uptime) +
+		        " minutes. Active supervisor uptime: "+ str(switch.active_uptime) +
+		        " minutes.")
+        elif switch.type == "brocade":
+            if ( switch.uptime <= int(critical_threshold) ):
+	        output(STATE_CRITICAL, "CRITICAL : Device has rebooted ! System Uptime: " + str(switch.uptime) +" minutes.")
+	    elif ( switch.uptime <= int(warning_threshold) ):
+                output(STATE_WARNING, "WARNING : Device has rebooted ! System Uptime: " + str(switch.uptime) +" minutes.")
+	    else:
+                output(STATE_OK, "OK : Device uptime : " + str(switch.uptime) +" minutes.")
+        elif switch.type == "mcdata":
+            if ( switch.uptime <= int(critical_threshold) ):
+	        output(STATE_CRITICAL, "CRITICAL : Device has rebooted ! System Uptime: " + str(switch.uptime) +" minutes.")
+	    elif ( switch.uptime <= int(warning_threshold) ):
+                output(STATE_WARNING, "WARNING : Device has rebooted ! System Uptime: " + str(switch.uptime) +" minutes.")
+	    else:
+                output(STATE_OK, "OK : Device uptime : " + str(switch.uptime) +" minutes.")
 ################################################################
 ## CheckEnv (paramiko)
 ################################################################
@@ -909,9 +943,12 @@ def CheckEnv(switch, warning_threshold, critical_threshold):
     if switch.type == "cisco":
         switch.environment_command = "show environment"
     elif switch.type == "brocade":
-        switch.environment_command = "show environment"
+        switch.environment_command = "switchStatusShow"
+        switch.environment_command = "fanShow"
+        switch.environment_command = "psShow"
+        switch.environment_command = "tempShow"
     elif switch.type == "mcdata":
-        switch.environment_command = "show environment"
+        switch.environment_command = "show all"
     env = switch.GetCommand(switch.environment_command)
 
     switch.client.close()
@@ -973,9 +1010,10 @@ def CheckResources(switch, warning_threshold, critical_threshold):
     if switch.type == "cisco":
         switch.resources_command = "show system resources"
     elif switch.type == "brocade":
-        switch.resources_command = "show system resources"
+        switch.resources_command = "uptime"
+        switch.resources_command = "memShow"
     elif switch.type == "mcdata":
-        switch.resources_command = "show system resources"
+        output(STATE_WARNING, "WARNING : Not Possible on mcdata's switch")
     resources = switch.GetCommand(switch.resources_command)
     switch.client.close()
     if not ParseResources(switch, resources):
@@ -1029,9 +1067,13 @@ def CheckInterfaces(switch, warning_threshold, critical_threshold):
         switch.interfaces_command = "show interface brief"
 	switch.interfaces_description_command = "show interface description"
     elif switch.type == "brocade":
-        switch.interfaces_command = "show interface brief"
+        switch.interfaces_command = "diagShow"
+        switch.interfaces_command2 = "switchShow"
+	switch.interfaces_description_command = ""
     elif switch.type == "mcdata":
-        switch.interfaces_command = "show interface brief"
+        switch.interfaces_command = "show port opticHealth"
+        switch.interfaces_command2 = "show port status"	
+	switch.interfaces_description_command = "show port config"
 
     interfaces = switch.GetCommand(switch.interfaces_command)
     interfaces_descr = switch.GetCommand(switch.interfaces_description_command)
