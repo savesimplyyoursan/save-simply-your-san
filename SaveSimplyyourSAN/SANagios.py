@@ -556,7 +556,7 @@ def ParseUptime(switch, input):
 	kernel_line = [line for line in lines if line.startswith("Kernel uptime")]
         active_line = [line for line in lines if line.startswith("Active supervisor uptime")]
 
-        if (not system_line) or (not kernel_line) or (not active_line):
+        if (not system_line[0]) or (not kernel_line[0]) or (not active_line[0]):
             return False
         sys_matchreg = [regexp.match(line) for line in system_line]
         kern_matchreg = [regexp.match(line) for line in kernel_line]
@@ -1090,7 +1090,11 @@ def CheckInterfaces(switch, warning_threshold, critical_threshold):
 	for (name, status, mode) in switch.int_list:
 	    if not status.startswith('up') and not status.startswith('down') and not status.startswith('trunking'):
 		descr_list = [description for (descr_name, description) in switch.int_descr_list if descr_name == name]
-		failed_list.append((name, status, mode, descr_list[0]))
+		if descr_list[0]:
+		    description = descr_list[0]
+		else:
+	            description = "No description"
+		failed_list.append((name, status, mode, description))
         #print failed_list
         if ( len(failed_list) >= int(critical_threshold) ):
 	    crit_flag = True   
@@ -1153,7 +1157,6 @@ def CheckInterface(switch, interface_arg):
 	# verifying it the interface is in the list of the switch's interface
 	for int_arg in interface_arg_list:
             name_list = [name for (name, status, mode) in switch.int_list if name == int_arg]
-	    #if not int_arg in name_list:
 	    if not name_list:
 		for (name, status, mode) in switch.int_list:
 		    int_name = ''.join(" %s," % name)
@@ -1164,25 +1167,29 @@ def CheckInterface(switch, interface_arg):
 	#it constructs a list with the failed interfaces
 	for (name, status, mode) in switch.int_list:
 	    if not status.startswith('up') and not status.startswith('trunking'):
-		descr_list = [description for (descr_name, description) in switch.int_descr_list if descr_name == name]
-		if descr_list:
-		    failed_list.append((name, status, mode, descr_list[0]))
-        #if the interface in the argument list is in the failed list, it is critical.
+		failed_list.append((name, status, mode))
+	#if the interface in the argument list is in the failed list, it is critical.
 	msg_ok.append("Interfaces OK: ")
 	for int_arg in interface_arg_list:
-	    fail_name = [name for (name, status, mode, description) in failed_list if name == int_arg]
-	    failed_arg_list = [(name, status, mode, description) for (name, status, mode, description) in failed_list if name == int_arg]
-	    
-	    if int_arg in fail_name:
+	    failed_arg_list = [(name, status, mode) for (name, status, mode) in failed_list if name == int_arg]
+	    if failed_arg_list:
 	        crit_flag = True #critical flag set
-		for (name, status, mode, description) in failed_arg_list:
+		for (name, status, mode) in failed_arg_list:
+		    descr_list = [description for (descr_name, description) in switch.int_descr_list if descr_name == name]
+		    if descr_list[0]:
+		        description = descr_list[0]
+	            else:
+			description = "No description"
 		    msg_critical.append("Interface: " + str(name) + " (" + str(description) + ") "+" mode: " + str(mode) + " is in status: " + str(status) + " ! ")
             else:
-		#int_msg = ''.join("%s (%s), " % (name, mode) for (name, status, mode) in switch.int_list if name == int_arg)
 		int_msg_list = [(name, mode) for (name, status, mode) in switch.int_list if name == int_arg]
-		#print int_msg_list
+                descr_list = [description for (descr_name, description) in switch.int_descr_list if descr_name == int_arg]
 		(name, mode) = int_msg_list[0]
-		int_msg = ''.join("%s (%s), " % (name, mode))
+		if descr_list[0]:
+		    description = descr_list[0]
+	        else:
+	            description = "No description"
+		int_msg = ''.join("%s (%s - %s), " % (name, description, mode))
 		msg_ok.append(int_msg)
 
 	if msg_critical:
