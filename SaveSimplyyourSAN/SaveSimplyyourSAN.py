@@ -23,11 +23,19 @@ import re
 import string
 import select
 import logging
-
-import paramiko
 import urllib2
-import pyftpdlib
 import telnetlib
+
+try:
+    import paramiko
+except ImportError:
+    raise ImportError, 'This program requires the paramiko extension for Python. See http://www.lag.net/paramiko/'
+try:
+    import pyftpdlib
+except ImportError:
+    raise ImportError, 'This program requires the pyftpdlib extension for Python. See http://code.google.com/p/pyftpdlib/'
+
+
 
 # hexlify used for the public key authentication. Not supported yet because Brocade switch don't support it
 #from binascii import hexlify
@@ -346,7 +354,7 @@ class Switch(object):
             print '***SSHConnect*** Authentication refused !'
             client.close()
             sys.exit(1)
-        except:
+        except SSHException:
             print '***SSHConnect*** Connection refused !'
             client.close()
             sys.exit(1)
@@ -359,7 +367,7 @@ class Switch(object):
         error = stderr.read().strip('\r\n')
         #print "out : " + output
         #print "err : " + error
-        response = ""
+        response = []
         if error:
             if self.type == "brocade":
   
@@ -388,11 +396,11 @@ class Switch(object):
                 while True:
                     if shell.recv_ready():
 		        shell_line = shell.recv(512)
-		        response += shell_line #concatenate the output
+		        response.append(shell_line) #concatenate the output
 		        lines = response.splitlines()
 		        if self.prompt in lines[-1]:
 		            break
-	        
+	        response = ''.join(response)
 		"""
                 rlist, wlist, xlist = select.select([shell],[],[])
                 elapsed = time.time() - time_start
@@ -446,7 +454,7 @@ class Switch(object):
 	"""
         print 'Sending the command :' + command
 
-        filename = self.name + '__' + command + '__' + time.strftime('%Y%m%d__%H%M',time.localtime())+ '__' + self.type + '.txt'
+        #filename = self.name + '__' + command + '__' + time.strftime('%Y%m%d__%H%M',time.localtime())+ '__' + self.type + '.txt'
         if not self.ssh_shell:
             stdin, stdout, stderr = self.client.exec_command(command)
 	    output = stdout.read().strip('\r\n')
@@ -478,11 +486,11 @@ class Switch(object):
            shellfile.flush()
            commandseen = False #a flag that tell if the command has been seen in the output line
            time_start = time.time() #used for the computation of the timeout
-	   output = ""
+	   output = []
            while True:
                if shell.recv_ready():
                    shell_line = shell.recv(256)
-		   output += shell_line #concatenate the output
+		   output.append(shell_line) #concatenate the output
 	           if ("--More--" in shell_line) or ("Type <CR>" in shell_line):
                        print "I'm sending the space caracter to continue."
                        shellfile.write(chr(32)) # chr(32) is the space caracter
@@ -495,12 +503,12 @@ class Switch(object):
 		   lines = output.splitlines()
 		   if self.prompt in lines[-1]:
 		       break
+           output = ''.join(output)
 	return output
 
 ################################################################
 ## SSHSave (paramiko)
 ################################################################
-    #def SSHSave(self, client, client_queue, server_queue, server_thread):
     def SSHSave(self, server_queue, server_thread):
         """
         SSHSave(self, client, server_queue, server_thread) -> None
@@ -698,10 +706,12 @@ class Switch(object):
         self.client.write(command + "\r") # sending the command
 
         print "Reading the output..."
-        response = '' # erase last response
-        while not self.prompt in response:
-            response += self.client.read_until(self.prompt, self.timeout) # join the output
-            # on brocade, it will ask you to press enter to continue
+        response = [] # erase last response
+	shell_line = ''
+        while not self.prompt in shell_line:
+            shell_line = self.client.read_until(self.prompt, self.timeout)
+            response.append(shell_line)
+	    # on brocade, it will ask you to press enter to continue
             if ("--More--" in response) or ("Type <CR>" in response):
                 print "I'm Sending the space caracter to continue."
                 self.client.write(chr(32)) # chr(32) is the space caracter
@@ -709,6 +719,7 @@ class Switch(object):
                 # Cleaning the response
                 #response = response.replace('--More--','')
                 #response = response.replace('Type <CR> or <SPACE BAR> to continue, <q> to stop','')
+	response = ''.join(response)
 	return response
 
 ################################################################
@@ -1134,21 +1145,22 @@ def SSHserver_launch(switch, server_queue, timeout):
 			sys.exit(2)
 		
 		s = serv_chan.makefile('r')
-    		data = ''
+    		data = []
     		try:
 	    		while True:
-				data += s.next()
+				#data += s.next()
+				data.append(s.next())
 				if len(data)>length:
 					moredata = data[length:]
                 			data = data[:length]
-                			if moredata!='\0':
+                			if moredata != '\0':
                     				print 'Got more '+ str(len(moredata))+ ' bytes than expected, ignoring it !'				
     		except:
 			#calculating the percent file received
 			done = (len(data)*100/length)
 			print 'SSHServer : received ' + str(done) + '%. Length received = ' + str(len(data))
 			s.close()
-		
+		data = ''.join(data)
 		# just another method to get the file by SCP
 		'''
     		data = ''
