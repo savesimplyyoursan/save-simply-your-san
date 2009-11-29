@@ -12,7 +12,6 @@ Contact Info:
 import base64
 import os
 import os.path
-import sys
 import socket
 import traceback
 
@@ -24,6 +23,10 @@ import select
 import logging
 import urllib2
 import telnetlib
+import thread
+import threading
+
+from threading import Thread
 
 try:
     import paramiko
@@ -53,28 +56,42 @@ class Switch(object):
     Switch(object)
     A class for the switch object
     """
-    def __init__(self, address, switch_type, user, password, connection_type, transfert_type, timeout, interface, nat, dir, key):
+    def __init__(self, address, user, password, switch_type='cisco', connection_type="ssh", transfert_type="scp", read_timeout=5.0, interface='', nat='', dir="no", pass_strong=15, ssh_shell=False, queue_timeout=20, prompt_timeout=4.0, debug=False, known_hosts='known_hosts', server_key='server_rsa.key', server_key_type='RSA'):
         """
         Definition of switch's attributes based on the switch's type
 
-        @param address : hostname or ip address
+        @param address : hostname or IP address
         @type address: str
         @param switch_type: cisco, brocade, mcdata
         @type switch_type: str
-        @type user: str
+	@param user: user
+        @type user: user used for the equipment's connection 
+	@param password: password used for the equipment's connection 
         @type password: str
         @param connection_type: telnet, ssh
         @type connection_type: str
-        @param transfert_type: ftp, ssh
+        @param transfert_type: ftp, scp
         @type transfert_type: str
-        @param timeout: timeout
-        @type timeout: int
+        @param read_timeout: timeout for reading the return of the command
+        @type read_timeout: float
 	@param interface : ip address
         @type interface: str
-	@param nat: ip address
+	@param nat: IP address
 	@type nat: str
 	@param dir: yes, no
 	@type dir: str
+	@param key: SSH private key used for the equipment's connection (for future dev)
+	@type key : str
+	@param debug: True or False
+	@type debug: bool
+	@param known_hosts: the known_hosts file
+	@type known_hosts: str
+        @param server_key: the server key for SCP transferts
+	@type server_key: str
+	@param server_connection_type : RSA, DSS
+	@type server_connection_type : str
+	@param prompt_timeout : the timeout for waitin the prompt to appear
+	@type prompt_timeout: float
         """
         self.address = address
         self.type = switch_type
@@ -82,18 +99,25 @@ class Switch(object):
         self.password = password
         self.connection_type = connection_type
         self.transfert_type = transfert_type
-        self.timeout = timeout
+        self.read_timeout = read_timeout
+	self.prompt_timeout = prompt_timeout
         self.interface = interface
 	self.nat = nat
 	self.dir = dir
-	self.ssh_key = key
-
-        self.ssh_shell = False # A flag in order to know if the switch require a real SSH Shell. True if it need a Real SSH Shell
-        self.pass_strong = 15 # Define the length of the random strings used for user and password for the transfert between the switch and the server
+	#self.ssh_key = key
+        # A flag in order to know if the switch require a real SSH Shell in case of ssh_command failed.
+	# True if it need a Real SSH Shell. False by default
+	self.ssh_shell = ssh_shell
+	# Define the length of the random strings used for user and password for the transfert between the switch and the server
+        self.pass_strong = pass_strong
+	# Store the random user and password for transfert to the FTP or SSH Server
         self.transfert_user = self.GenRandomWord(self.pass_strong)
         self.transfert_password = self.GenRandomWord(self.pass_strong)
-	self.queue_timeout = 20 # timeout for the server queue
-
+	self.queue_timeout = queue_timeout # timeout for the server queue
+	self.debug = debug
+	self.known_hosts = known_hosts #the known_hosts file
+	self.server_key_type = server_key_type
+	self.server_key = server_key #the known_hosts file
         # defining the command that will be used to verify the type of switch
 	if self.type == "brocade":
 	    self.commandtest = "switchshow"
@@ -103,27 +127,24 @@ class Switch(object):
 	    self.commandtest = "show switchname"
 	    self.banner = "login"
 	    self.prompt = "#"
-	    self.uptime_command = "show system uptime"
-	    self.environment_command = "show environment"
-	    self.resources_command = "show system resources"
-	    self.interfaces_command = "show interface brief"
         elif self.type == "mcdata":
 	    self.commandtest = "show system"
-	    #self.banner = "Username"
 	    self.banner = "sername"
 	    self.prompt = ">"
-	else:
-	    print "Not a good type of switch ! possibles values are : brocade or cisco or mcdata"
-	    sys.exit(1)
+        elif self.type == "others":
+	    self.commandtest = "hostname"
+	    self.banner = "sername"
+	    self.prompt = "$"
+        else:
+	    raise InputError(self.type, "Not a good type of switch ! possibles values are : brocade or cisco or mcdata or others" )
 	# try to open the SSH private key
-	if self.ssh_key:
-	   try:
-               open(self.ssh_key, 'r')
-	   except:
-	       print "The SSH private key :"+str(self.ssh_key)+"doesn't exist !"
-	       sys.exit(1)
-################################################
+	#if self.ssh_key:
+	   #try:
+               #open(self.ssh_key, 'r')
+	   #except:
+	       #print "The SSH private key :"+str(self.ssh_key)+"doesn't exist !"
 
+################################################
     def GenRandomWord(self, length):
         """
         GenRandomWord(self, length) -> string
@@ -142,13 +163,106 @@ class Switch(object):
         return newword
 
 ################################################
+    def GetSwitchTypeFromPrompt(self, output):
+        """
+        GetSwitchTypeFromPrompt(self, output) -> Boolean
+        Try to guess the switch's type with the prompt that we get either by SSH, either by Telnet. Return True or False. If true, the switch self.type attribute is set, the attributes backupname and the commandsave are set.
 
+        @param output: output of the telnet or SSH command
+        @type output: str
+        @rtype: bool
+        """
+        if ("md parse error" in output) or ("nvalid command" in output) or ("^"  in output) or ("ommand not found" in output) or ("rror" in output):
+            print "***GetSwitchType*** Received an invalid command !"
+	    return False
+        else:
+            lines = output.splitlines()
+	    discovered = False # Flag to see if it is discovered
+	    cisco_regexp = re.compile(r"^(.+)(#)", re.IGNORECASE) # prompt looks like : 'hostname#'
+	    mcdata_regexp = re.compile(r"^(.*)(>)", re.IGNORECASE) # prompt looks like : 'Root>' or '>'
+	    brocade_regexp = re.compile(r"^(.+)\:(.+)>", re.IGNORECASE) # prompt looks like : 'hostname:user>'
+	    others_regexp = re.compile(r"^(.*)(\$)", re.IGNORECASE) # prompt looks like : 'hostname$'
+            for line in lines:
+		if self.debug:
+		    print "GetSwitchType line: '%s'" % line
+	        cisco_matchreg = cisco_regexp.match(line)
+		if cisco_matchreg:
+		    if self.type != "cisco":
+			print "WARNING: We've guessed a Cisco equipment ! please verify your argument. we will assume a cisco for testing equipment"
+	            self.type = "cisco"
+		    self.prompt = line
+		    self.name = cisco_matchreg.group(1).strip()
+		    self.commandtest = "show switchname"
+		    if self.debug:
+		        print "Guessed a CISCO equipment, name '%s', and prompt '%s'" % (self.name, self.prompt)
+		    discovered = True
+		    break
+	        brocade_matchreg = brocade_regexp.match(line)
+		if brocade_matchreg:
+		    if self.type != "brocade":
+			print "WARNING: We've guessed a Brocade equipment ! please verify your argument. we will assume a brocade for testing equipment"			
+		    self.type = "brocade"
+		    self.prompt = line
+		    self.name = brocade_matchreg.group(1).strip()
+		    self.commandtest = "switchshow"
+		    if self.debug:
+			print "Guessed a BROCADE equipment, name '%s', and prompt '%s'" % (self.name, self.prompt)		    
+		    discovered = True
+		    break
+	        mcdata_matchreg = mcdata_regexp.match(line)
+		if mcdata_matchreg:
+		    if self.type != "mcdata":
+			print "WARNING: We've guessed a mcdata equipment ! please verify your argument. we will assume a mcdata for testing equipment"
+		    self.type = "mcdata"
+		    self.prompt = line
+		    self.commandtest = "show system"
+		    self.name = ''
+		    if self.debug:
+			print "Guessed a MCDATA equipment, prompt '%s'" % self.prompt
+                    discovered = True
+		    return True
+		    break
+	        others_matchreg = others_regexp.match(line)
+		if others_matchreg:
+		    if self.type != "others":
+			print "WARNING: We've guessed a others equipment ! please verify your argument. we will assume a others for testing equipment"			
+		    self.type = "others"
+		    self.prompt = line
+		    #self.name = others_matchreg.group(1).strip()
+		    self.name = ''
+		    self.commandtest = "hostname"
+		    if self.debug:
+			#print "Guessed an OTHERS equipment, name '%s', and prompt '%s'" % (self.name, self.prompt)
+			print "Guessed an OTHERS equipment and prompt '%s'" % (self.prompt)
+                    discovered = True
+		    return True
+		    break
+            if not discovered:
+	        return False
+            if self.name:
+		# set the name of the backup file and store it in self.file attribute
+		self.file = self.name + '__config__' + time.strftime('%Y%m%d__%H%M',time.localtime())+ '__' + self.type + '.txt'
+
+                # determining the command that will be send with the type of the switch and the configuration file sended to the server
+                if self.type == "brocade":
+                    self.commandsave = "configupload"
+                elif self.type == "cisco":
+                    if not self.nat:
+                        if not self.interface:
+                            self.commandsave = 'copy running-config '+ self.transfert_type +'://'+ self.transfert_user +'@'+ str(socket.gethostbyname(socket.gethostname())) + '/' + self.file
+                        else:
+                            self.commandsave = 'copy running-config '+ self.transfert_type +'://'+ self.transfert_user +'@'+ self.interface + '/' + self.file
+                    else:
+                        self.commandsave = 'copy running-config '+ self.transfert_type +'://'+ self.transfert_user +'@'+ self.nat + '/' + self.file
+
+                return True
+
+################################################
     def GetSwitchName(self, output):
         """
-        GetSwitchName(self, output) -> Boolean
+        GetSwitchName(self, output) -> Boolean 
         verify the output that we get by the commandtest either by SSH, either by Telnet. Return True or False. If true, the switchname attribute is set, the attributes backupname and the commandsave are set.
-
-        @param output: output of the telnet command
+        @param output: output of the telnet or SSH command
         @type output: str
         @rtype: bool
         """
@@ -181,8 +295,6 @@ class Switch(object):
                 self.name = matchreg.group(2)
             elif self.type == "brocade":
 		lines = output.splitlines()
-
-		
 		if self.ssh_shell:
 		    regexp = re.compile(r"^(.*)\:(.*)>", re.IGNORECASE) # prompt looks like : 'hostname:user>'
 		else:
@@ -197,11 +309,15 @@ class Switch(object):
 			break
                 if not matchreg:
                     return False
-
+            elif self.type == "others":
+                if self.connection_type == "telnet":
+                    self.name = output
+                elif self.connection_type == "ssh":
+                    self.name = output
             if self.name:
                 #redefining the prompt of the switch for brocade and cisco
-                if not "mcdata" in self.type:
-                    self.prompt = self.name + self.prompt
+                #if not "mcdata" in self.type:
+                    #self.prompt = self.name + self.prompt
 
                 
 		# set the name of the backup file and store it in self.file attribute
@@ -220,8 +336,8 @@ class Switch(object):
                         self.commandsave = 'copy running-config '+ self.transfert_type +'://'+ self.transfert_user +'@'+ self.nat + '/' + self.file
 
                 return True
-################################################
 
+################################################
     def ChangeDir(self, directory):
         """
         ChangeDir(self, directory) -> Boolean
@@ -230,30 +346,24 @@ class Switch(object):
         @rtype: bool
         """
 	if self.dir == 'byday':
-	    directory = time.strftime('%Y%m%d',time.localtime())
+	    directory = str(time.strftime('%Y%m%d',time.localtime()))
 	if self.dir != 'no':
 	    directory = str(self.dir)
+	#if directory doesn't exist, we create it
 	if not (os.path.isdir(directory)):
-	     try:
-                 os.mkdir(directory)
-             except:
-                 return False
-             try:
-                 os.chdir(directory)
-             except:
-                 return False
-
-             return True
-        else:
-             try:
-                 os.chdir(directory)
-             except:
-                 return False
-
-             return True
+	    try:
+                os.mkdir(directory)
+            except:
+		print "*** ChangeDir : Impossible to create the directory: %s " % directory
+                return False
+        try:
+            os.chdir(directory)
+        except:
+	    print "*** ChangeDir : Impossible to go into the directory: %s " % directory
+            return False
+        return True
 
 #################################################
-
     def SaveFileInDirectory(self, input, name, directory):
         """
 	(old name : SaveFileInDirectory(self, input, name) -> Boolean)
@@ -268,46 +378,36 @@ class Switch(object):
         @rtype: bool
         """
         if not self.ChangeDir(directory):
-            print "***SaveFileInDirectory*** Unable to go in the directory :"+str(directory)
+            print "***SaveFileInDirectory*** Unable to go in the directory : "+str(directory)
             return False
         # first we verify if this backup doesn't exist
-        if not (os.path.isfile(name)):
-            # we try to make a file
-            try :
-                backup = open(name, 'w')
-                backup.write(input)
-                backup.close()
-            except:
-                return False
-        else:
+        if (os.path.isfile(name)):
 	    name2 = name + "_old.txt"
             #we create a new backup but we don't erase the one that exists
-            print "The file "+ str(name) +" already exists ! It will be renamed in : " + str(name2)
+            print "The file "+ str(name) +" already exists ! It will be renamed in: " + str(name2)
 	    try:
 	        os.rename(name, name2)
 	    except:
-	        print "***SaveFileInDirectory*** Unable to rename the file:"+str(name)
+	        print "***SaveFileInDirectory*** Unable to rename the file: "+str(name)
 	        return False
-            try:
+        try:
                 backup = open(name, 'w')
                 backup.write(input)
                 backup.close()
-            except:
+        except:
                 return False
-        print "Successfully saved the file:"+str(name)
-        return True
-
+        
+	print "Successfully saved the file:"+str(name)
+	return True
 
 ################################################################
     def Connect(self):
         if self.connection_type == "ssh":
-	    if not self.SSHConnect():
-		sys.exit(2)
-	if self.connection_type == "telnet":
-	    if not self.TelnetConnect():
-		sys.exit(2)
-	return True
-
+	    return self.SSHConnect()
+	elif self.connection_type == "telnet":
+	    return self.TelnetConnect()
+        else:
+            raise InputError(self.connection_type, "Not a good connection type !")
 
 ################################################################
     def GetCommand(self, command):
@@ -315,86 +415,125 @@ class Switch(object):
 	    return self.SSHCommand(command)
 	if self.connection_type == "telnet":
 	    return self.TelnetCommand(command)
+        else:
+            raise InputError(self.connection_type, "Not a good connection type !")
+################################################################
+    def TestType(self):
+        if self.connection_type == "ssh":
+	    return self.SSHTestType()
+	if self.connection_type == "telnet":
+	    return self.TelnetTestType()
+        else:
+            raise InputError(self.connection_type, "Not a good connection type !")
 
+################################################################
+    def GetPromptAndType(self):
+        if self.connection_type == "ssh":
+	    return self.SSHGetPromptAndType()
+	if self.connection_type == "telnet":
+	    return self.TelnetGetPromptAndType()
+        else:
+            raise InputError(self.connection_type, "Not a good connection type !")
 ################################################################
 ## SSHConnect (package Paramiko)
 ################################################################
     def SSHConnect(self):
         """
         SSHConnect(self) -> Boolean
-        Try to establish an SSH connection and return it.
+        Try to establish an SSH connection and return True or False.
 
         @param switch: the switch object
         @type switch: switch
 	@rtype: bool
         """
-        print "Starting the SSH Connection"
+        print "Starting SSH Connection"
         client = SSHClient()
         # set the key policy to add the key if the host is unknown
         client.set_missing_host_key_policy(AutoAddPolicy())
         try :
-            #client.load_system_host_keys('known_hosts')
-            client.load_host_keys('known_hosts')
-        except:
-            print "***SSHConnect*** Unable to load the SSH host keys file : known_hosts"
+            client.load_host_keys(self.known_hosts)
+        except IOError:
+            print "***SSHConnect*** Unable to load the SSH host keys file : %s" % str(self.known_hosts)
             client.close()
-            sys.exit(1)
+            return False
 
         try:
-            # Connecting to hostname, on port 22 (SSH), username and password defined. Set the timeout and disable the connection to the local agent. An authentification with private key is also tried
-            client.connect(self.address, port=22, username=self.user, password=self.password, pkey=None, key_filename=self.ssh_key, timeout=self.timeout, allow_agent=False, look_for_keys=True)
+            # Connecting to hostname, on port 22 (SSH), username and password defined. Set the timeout and disable the connection to the local agent.
+            #client.connect(self.address, port=22, username=self.user, password=self.password, pkey=None, key_filename=self.ssh_key, timeout=self.timeout, allow_agent=False, look_for_keys=True)
+	    client.connect(self.address, port=22, username=self.user, password=self.password, pkey=None, timeout=self.prompt_timeout, allow_agent=False, look_for_keys=False)
         except BadHostKeyException:
             print '***SSHConnect*** Bad SSH host key ! Closing connection...'
             client.close()
-            sys.exit(1)
+            return False
         except AuthenticationException:
             print '***SSHConnect*** Authentication refused !'
             client.close()
-            sys.exit(1)
+            return False
         except SSHException:
-            print '***SSHConnect*** Connection refused !'
+            print '***SSHConnect*** Connection refused for an unknow reason!'
             client.close()
-            sys.exit(1)
-        print "SSH connection successfull"
+            return False
+        except socket.error:
+	    print '***SSHConnect*** Connection refused : socket error !'
+            client.close()
+            return False
+        print "SSH connection and authentication successfully done"
+        self.client = client
+	return True
 
+#################################################################
+    def SSHTestType(self):
+	"""
+        SSHTestType(self) -> Boolean
+        Test the switch type and try to grab the switch's name. Return true if it is successful.
+
+        @rtype: bool
+        """
         # Try to get the switch's name by the self.commandtest
-        print "Got a SSH Shell. Testing the switch with the command :" + self.commandtest
-        stdin, stdout, stderr = client.exec_command(self.commandtest)
+        print "Testing the switch with the SSH command :" + self.commandtest
+        stdin, stdout, stderr = self.client.exec_command(self.commandtest)
         output = stdout.read().strip('\r\n')
         error = stderr.read().strip('\r\n')
-        #print "out : " + output
-        #print "err : " + error
+	if self.debug:
+            print "out : " + output
+            print "err : " + error
         response = []
         if error:
             if self.type == "brocade":
-  
-            # For Brocade switch running certains Fabric OS versions (> 6), the exec_command doesn't work well so we must try to get an output from the switch by invoking a real shell
-	        print "Degrading to a real SSH shell..."
+                # For Brocade switch running certains Fabric OS versions (> 6), the exec_command doesn't work well so we must try to get an output from the switch by invoking a real shell
+	        print "Trying to degrading to a real SSH shell..."
                 try:    
-                    shell = client.invoke_shell()
-                except:
-                    print '***SSHConnect*** Unable to have a real SSH shell'
-                    client.close()
-                    sys.exit(2)
+                    shell = self.client.invoke_shell()
+                except SSHException:
+                    print '***SSHTestType*** Unable to have a real SSH shell with this Brocade switch'
+                    self.client.close()
+                    return False
                 self.ssh_shell = True # set the flag that the switch require the use of a shell to work well
                 shell.set_combine_stderr(True) #combine standard and error outputs
+		shell.settimeout(self.read_timeout) #set timeout for commands
                 shellfile = shell.makefile('rw')
                 ret = '\r' # defining the return caracter
                 # sending the commandtest to the switch
                 shellfile.write(self.commandtest + ret)
                 shellfile.flush()
-	        time.sleep(self.timeout)
+	        time.sleep(self.read_timeout)
                 # sending a return caracter in order to get the prompt after the command on the shell
                 shellfile.write(ret)
                 shellfile.flush()
                 commandseen = False #a flag that tell if the command has been seen in the output line
-                time_start = time.time()
-
                 while True:
                     if shell.recv_ready():
-		        shell_line = shell.recv(512)
+			try:
+		            shell_line = shell.recv(512)
+			except socket.timeout:
+		            print '***SSHTestType: Timeout when reading line: "%s" !' % str(shell_line)
+			    self.client.close()
+			    return False
+		        if self.debug:
+			    print "SSHTestType shell line: '%s'" % str(shell_line)
 		        response.append(shell_line) #concatenate the output
-		        lines = response.splitlines()
+		        #lines = response.splitlines()
+			lines = shell_line.splitlines()
 		        if self.prompt in lines[-1]:
 		            break
 	        response = ''.join(response)
@@ -417,25 +556,93 @@ class Switch(object):
 			pass
 		"""
             else: # for macdata or cisco switches
-                print "***SSHConnect*** Not the good type of switch :" + str(error)
-                client.close()
-                sys.exit(2)
+                print "***SSHTestType*** Not the good type of switch: " + str(error)
+                self.client.close()
+                return False
         else:
             response = output
 
         if not self.GetSwitchName(response):
-            print "***SSHConnect*** Unable to get the switchname from the output :" + str(response)
-            client.close()
-            sys.exit(2)
+            print '***SSHTestType*** Unable to get the switchname from the output: "%s" !' % str(response)
+            self.client.close()
+            return False
 
-        print "Good type of switch ! Switch's name :" + str(self.name)
-        self.client = client
+        print "Good type of switch ! Switch's name: " + str(self.name)
 	return True
 
+#################################################################
+    def SSHGetPromptAndType(self):
+	"""
+        SSHGetPromptAndType(self) -> Boolean
+	Try to get a Prompt and to guess the type of equipment     
+
+        @rtype: bool
+        """
+	#we send a return character and we wait for the prompt.
+        ret = '\r' # defining the return caracter
+        # Try to get the switch's name by the self.commandtest
+	print "Waiting the prompt..."
+        response = []
+        try:    
+                shell = self.client.invoke_shell()
+        except SSHException:
+                print '***SSHGetPrompt*** Unable to have a real SSH shell with this switch !'
+                self.client.close()
+                return False
+        shell.set_combine_stderr(True) #combine standard and error outputs
+        shell.settimeout(self.prompt_timeout) #set timeout for commands
+        shellfile = shell.makefile('rw')
+	time_start = time.time()
+        while True:
+                    if shell.recv_ready():
+			try:
+		            shell_line = shell.recv(512)
+			except socket.timeout:
+		            print '*** SSHGetPrompt: Timeout when reading line: "%s" !' % str(shell_line)
+			    self.client.close()
+			    return False
+		        if self.debug:
+			    print "SSHGetPrompt shell line: '%s'" % str(shell_line)
+ 		        response.append(shell_line) #concatenate the output
+			if self.GetSwitchTypeFromPrompt(shell_line):
+			    return True
+		            break
+		    else:
+			elapsed = time.time() - time_start
+			if elapsed > self.prompt_timeout:
+			    if not response:
+	                        print "***SSHGetPrompt*** Prompt timeout ! No response for the prompt !"
+	                        return False
+			    else:
+				response = ''.join(response)
+                                if self.debug:
+				    print 'SSHGetPrompt: Prompt timeout ! Got the response: "%s"' % str(response)
+	                        if self.GetSwitchTypeFromPrompt(response):
+                                    return True
+			        else:
+				    print '*** SSHGetPrompt *** Impossible to guess the equipment type from the response: "%s"' % str(response)
+			            return False
+	"""
+                rlist, wlist, xlist = select.select([shell],[],[])
+                elapsed = time.time() - time_start
+                if elapsed >= self.timeout:
+                    print "Timeout with the switch's test"
+                    break
+	        if commandseen:
+                    # when the flag is set we break and get out from the while true
+                    shell.close() #closing this shell. We've done the job
+		    break
+	        if shell in rlist:
+                    response += shell.recv(1024).strip()
+		    print response
+		    if (self.prompt + " " + self.commandtest) in response:
+		        commandseen = True # set the flag
+			#print "commandseen"
+			pass
+        """
 ################################################################
 ## SSHCommand (paramiko)
 ################################################################
-
     def SSHCommand(self, command):
         """
         SSHCommand(self, command) --> String
@@ -450,43 +657,50 @@ class Switch(object):
 	@rtype: str
 	"""
         print 'Sending the command :' + command
-
-        #filename = self.name + '__' + command + '__' + time.strftime('%Y%m%d__%H%M',time.localtime())+ '__' + self.type + '.txt'
         if not self.ssh_shell:
             stdin, stdout, stderr = self.client.exec_command(command)
 	    output = stdout.read().strip('\r\n')
 	    error = stderr.read().strip('\r\n')
-	    #print "output : " + output
-	    #print "error : " + error
+	    if self.debug:
+	        print "output : " + output
+	        print "error : " + error
 	    if error:
 	        print "***SSHCommand*** Error with the command on the switch :" + str(error)
-	        sys.exit(2)
+	        raise CommandError(error,"***SSHCommand*** Error with the command on the switch !")
 
         else:  #the self.ssh_shell attribute is true
            try:    
                shell = self.client.invoke_shell()
-	   except:
+	   except SSHException:
    	       print '***SSHCommand*** Unable to have an SSH shell from the switch'
 	       self.client.close()
-   	       sys.exit(2)
+   	       raise ConnectionError("SSHCommand",'***SSHCommand*** Unable to have an SSH shell from the switch' )
 
 	   shell.set_combine_stderr(True)
+	   shell.settimeout(self.read_timeout) #set timeout for commands
 	   shellfile = shell.makefile('rw')
            # defining the return caracter
 	   ret = '\r'
            # sending the commandtest to the switch
            shellfile.write(command + ret)
            shellfile.flush()
-           time.sleep(self.timeout) # wait connectime seconds
+           time.sleep(self.read_timeout) # wait connectime seconds
            # sending a return caracter in order to get the prompt after the command on the shell
            shellfile.write(ret)
            shellfile.flush()
            commandseen = False #a flag that tell if the command has been seen in the output line
-           time_start = time.time() #used for the computation of the timeout
 	   output = []
            while True:
                if shell.recv_ready():
-                   shell_line = shell.recv(256)
+		   try:
+                       shell_line = shell.recv(256)
+		   except socket.timeout:
+		       print '*** SSHCommand: Timeout when reading line: "%s" !' % str(shell_line)
+		       self.client.close()
+		       raise ConnectionError("SSHCommand",'SSHCommand: Timeout when reading line: "%s" !' % str(shell_line))
+	           if self.debug:
+		       print "SSHCommand shell line: '%s' " % str(shell_line)
+
 		   output.append(shell_line) #concatenate the output
 	           if ("--More--" in shell_line) or ("Type <CR>" in shell_line):
                        print "I'm sending the space caracter to continue."
@@ -497,7 +711,7 @@ class Switch(object):
                        # Cleaning the response
                        #shell_line = shell_line.replace('--More--','')
                        #shell_line = shell_line.replace('Type <CR> or <SPACE BAR> to continue, <q> to stop','')
-		   lines = output.splitlines()
+		   lines = shell_line.splitlines()
 		   if self.prompt in lines[-1]:
 		       break
            output = ''.join(output)
@@ -522,12 +736,13 @@ class Switch(object):
         #client_queue.put(self.file)
         try:    
             shell = self.client.invoke_shell()
-	except:
-   	    print '***SSHSave*** Unable to have an SSH shell from the switch'
+	except SSHException:
+   	    print '***SSHSave*** Unable to have an SSH shell from the switch !'
 	    self.client.close()
-   	    sys.exit(2)
+   	    return False
 
 	shell.set_combine_stderr(True)
+	shell.settimeout(self.read_timeout) #set timeout for commands
 	shellfile = shell.makefile('rw')
 	ret = '\r' # defining the return caracter
 	server_thread.start()
@@ -560,9 +775,9 @@ class Switch(object):
 			print '***SSHSave*** Connection refused by the SSH or FTP Server : ' + shell_line
 			server_thread._Thread__stop()
                         self.client.close()
-			sys.exit(2)
+			raise ConnectionError('***SSHSave***','Connection refused by the SSH or FTP Server !')
 		    #reading asked section line : Section (all|chassis [all]):
-		    elif 'ection' in shell_line:
+		    elif 'section' in shell_line.lower():
 		        print "sending section"
                         shellfile.write("all" + ret)
                         shellfile.flush()
@@ -603,13 +818,13 @@ class Switch(object):
                         pass
 		    else:
                         elapsed = time.time() - time_start
-                        if elapsed >= (self.timeout + 30) :
+                        if elapsed >= (self.read_timeout + 30) :
                             print "***SSHSave*** Timeout with the command"
                             break
    
             else:
                 elapsed = time.time() - time_start
-                if elapsed >= (self.timeout + 30):
+                if elapsed >= (self.read_timeout + 30):
                     print "***SSHSave*** Timeout with the command"
                     break
 
@@ -620,18 +835,18 @@ class Switch(object):
             print '***SSHSave*** Transfert Failed !'
 	    server_thread._Thread__stop()
             self.client.close()
-	    sys.exit(2)
+	    return False
 	    
         if result == 'backup OK':
             print 'Transfert and Backup successfully done ! in the file : '+ self.file
 	    server_thread._Thread__stop()
 	    self.client.close()
-            sys.exit(0)
+            return True
         else:
 	    print '***SSHSave*** Transfert Failed !'
 	    server_thread._Thread__stop()
             self.client.close()
-	    sys.exit(2)
+	    return False
 
 
 ################################################################
@@ -646,40 +861,110 @@ class Switch(object):
         """
         print "Starting the Telnet connection"
         # waiting for the banner
+	#promptlist = ['login', 'sername'] #prompt can be login or username
+	response = ''
         try:
 	    tn = telnetlib.Telnet(self.address)
-            tn.read_until(self.banner, self.timeout)
-        except:
-            print "***TelnetConnect*** Telnet connection impossible to the host :" + self.address
+            response = tn.read_until('ogin', self.prompt_timeout)
+	    #(index, match, response) = tn.expect(promptlist, self.prompt_timeout)
+	    #(response) = tn.read_all()
+            #(response) = tn.read_some()
+	    if self.debug:
+                print "TelnetConnect: login response: '%s'" % str(response)
+        except EOFError:
+            print "***TelnetConnect*** Telnet connection impossible to connect to the host :" + self.address
             return False
+        """
+        if not 'sername' in response:
+            print "***TelnetConnect*** Telnet connection impossible to connect to the host :" + self.address
+            return False
+	"""
         # sending username and password to the switch
         try:
+	    print "sending username..."
             tn.write(self.user + "\n")
-            tn.read_until("assword", self.timeout)
+        except socket.error:
+            print "***TelnetConnect*** Connection refused by the host when trying to write username :" + str(self.address)
+            tn.close()
+            return False
+        response = ''
+        try:
+            response = tn.read_until("assword", self.prompt_timeout)
+	    if self.debug:
+                print "TelnetConnect: password response: '%s'" % str(response)
+        except EOFError:
+            print "***TelnetConnect*** Connection refused by the host when waiting for the password prompt :" + str(self.address)
+            tn.close()
+            return False
+        if ('sername' in response) or ('ogin' in response):
+            print "***TelnetConnect*** wrong username for host :" + str(self.address)
+            tn.close()
+            return False
+	try:
+	    print "sending password..."
             tn.write(self.password + "\n")
-            response = tn.read_until(self.prompt, self.timeout)
-        except:
-            print "***TelnetConnect*** Connection refused by the host :" + str(self.address)
+        except socket.error:
+            print "***TelnetConnect*** Connection refused by the host when trying to write password :" + str(self.address)
             tn.close()
             return False
-
-        if not self.prompt in response:  #Verify the switch's type
-            print "***TelnetConnect*** Not the good type of switch ! Received the prompt :" + str(response)
+        
+            #response = tn.read_until(self.prompt, self.prompt_timeout)
+	response = ''
+	promptlist = ['#', '>', '\$']
+	(index, match, response) = tn.expect(promptlist, self.prompt_timeout)
+	if self.debug:
+            print "TelnetConnect: index %s, match %s, response: '%s'" % (str(index), str(match), str(response))
+        if ('assword' in response) or ('ogin' in response) or ('sername' in response):
+            print "***TelnetConnect*** Connection refused by the host. Wrong login or password for host :" + str(self.address)
             tn.close()
             return False
+        if match:
+	    self.prompt = promptlist[index]
+            self.client = tn
+            return True
+################################################################
+    def TelnetTestType(self):
+	"""
+        TelnetTestType(self) -> Boolean
+        Test the switch type and try to grab the switch's name. Return true if it is successful.
 
+        @rtype: bool
+        """
         # Try to get the switch's name by the switch.commandtest
         print "Got a Telnet Shell. Testing the switch with the command :" + self.commandtest
-        tn.write(self.commandtest + "\n")
+        self.client.write(self.commandtest + "\n")
         response = '' # erase last response
-        response = tn.read_until(self.prompt, self.timeout)
+        response = self.client.read_until(self.prompt, self.read_timeout)
+	if self.debug:
+	    print "TelnetTestType response: '%s'" % response
         if not self.GetSwitchName(response):
-            print "***TelnetConnect*** Unable to get the switchname from the output :" + str(response)
-	    tn.close()
+            print "***TelnetTestType*** Unable to get the switchname from the output :" + str(response)
+	    self.client.close()
             return False
         print "Good type of switch ! Switch's name :" + str(self.name)
-        self.client = tn
         return True
+
+################################################################
+    def TelnetGetPromptAndType(self):
+	"""
+        TelnetGetPromptAndType(self) -> Boolean
+        Test the switch type and try to grab the switch's name. Return true if it is successful.
+
+        @rtype: bool
+        """
+        # Try to get the switch's name by the switch.commandtest
+	#we send a return character and we wait for the prompt.
+        ret = '\r\n' # defining the return caracter
+        self.client.write(ret)
+        response = '' # erase last response
+        response = self.client.read_until(self.prompt, self.read_timeout)
+	if self.debug:
+	    print "TelnetGetPromptAndType response: '%s'" % response
+	if self.GetSwitchTypeFromPrompt(response):
+            return True
+        else:
+	    print "***TelnetGetPromptAndType*** Unable to guess the type from the output :" + str(response)
+	    return False
 ################################################################
 ## TelnetCommand (telnetlib)
 ################################################################
@@ -697,7 +982,7 @@ class Switch(object):
         # for cisco switch you can avoid to type space in order to continue
         if self.type == "cisco":
             self.client.write("terminal length 0" + "\n")
-	    self.client.read_until(self.prompt, self.timeout)
+	    self.client.read_until(self.prompt, self.read_timeout)
 	
 	print "Sending the command to the switch :" + str(command)
         self.client.write(command + "\r") # sending the command
@@ -706,8 +991,10 @@ class Switch(object):
         response = [] # erase last response
 	shell_line = ''
         while not self.prompt in shell_line:
-            shell_line = self.client.read_until(self.prompt, self.timeout)
+            shell_line = self.client.read_until(self.prompt, self.read_timeout)
             response.append(shell_line)
+	    if self.debug:
+		print "TelnetCommand shell line: '%s'" % str(shell_line)
 	    # on brocade, it will ask you to press enter to continue
             if ("--More--" in response) or ("Type <CR>" in response):
                 print "I'm Sending the space caracter to continue."
@@ -722,7 +1009,6 @@ class Switch(object):
 ################################################################
 ## TelnetSave (telnetlib)
 ################################################################
-    #def TelnetSave(switch, tn, client_queue, server_queue, server_thread):
     def TelnetSave(self, server_queue, server_thread):
         """
         TelnetSave(self, server_queue, server_thread) -> None
@@ -732,9 +1018,7 @@ class Switch(object):
         @param server_thread: server Thread
         @type server_thread: Thread
         """
-        # Sending the name of the file that will be transmetted to the server by the queue
-        #client_queue.put(self.file)
-        server_thread.start()
+        server_thread.start() #start the FTP or SCP Server
         # sending the command
         print 'Sending the command to the switch : ' + self.commandsave
         self.client.write(self.commandsave + "\n")
@@ -742,21 +1026,21 @@ class Switch(object):
             # we need to send the protocol, host, user, file and password to begin the transfert.
             response = '' # erasing the last response	
             #reading asked protocol line : Protocol (scp or ftp) [ftp]:
-            response = self.client.read_until('rotocol', self.timeout)
+            response = self.client.read_until('rotocol', self.read_timeout)
             #print "response prot: " + response
             if 'rotocol' in response:
         	#print "response prot: " + response
         	self.client.write( self.transfert_type + "\n")
         	response = ''
         	#reading asked host line : Server Name or IP Address [host]:
-        	response = self.client.read_until('host', self.timeout)
+        	response = self.client.read_until('host', self.read_timeout)
 		#reading asked section line : configupload must use secure protocol :
         	if 'must use secure protocol' in response:
         	    print "*** TelnetSave *** The switch is in secure mode :" + response
                     print '*** TelnetSave *** Transfert Failed !'
                     server_thread._Thread__stop()
                     self.client.close()
-                    sys.exit(2)
+                    raise ConnectionError('*** TelnetSave ***','The switch is in secure mode !')
         	#print "response host: " + response
         	if not self.nat:
         	    if not self.interface:
@@ -767,22 +1051,22 @@ class Switch(object):
                     self.client.write( self.nat + "\n")
         	response = ''
         	#reading asked user line : User Name [user]:
-        	response = self.client.read_until('ser', self.timeout)
+        	response = self.client.read_until('ser', self.read_timeout)
         	#print "response user: " + response
         	self.client.write( self.transfert_user + "\n")
         	response = ''
         	#reading asked file line : File Name [config.txt]:
-        	response = self.client.read_until('ile', self.timeout)
+        	response = self.client.read_until('ile', self.read_timeout)
         	#print "response file: " + response
         	self.client.write( self.file + "\n")
         	response = ''
         	#reading asked section line : Section (all|chassis [all])::
-        	response = self.client.read_until('ection', self.timeout)
+        	response = self.client.read_until('ection', self.read_timeout)
         	if "ection" in response:
         	    self.client.write( "all" + "\n")
         	response = ''
         	#reading asked password line : Password:
-        	response = self.client.read_until('assword', self.timeout)
+        	response = self.client.read_until('assword', self.read_timeout)
         	#print "response pass: " + response
         	#sending the password for the transfert
         	print 'Sending password for the transfert'
@@ -798,21 +1082,21 @@ class Switch(object):
                     self.client.write( self.nat + "\n")
                 response = ''
         	#reading asked user line : User Name [user]:
-        	response = self.client.read_until('ser', self.timeout)
+        	response = self.client.read_until('ser', self.read_timeout)
         	#print "response user: " + response
         	self.client.write( self.transfert_user + "\n")
 	        response = ''
 	        #reading asked file line : File Name [config.txt]:
-	        response = self.client.read_until('ile', self.timeout)
+	        response = self.client.read_until('ile', self.read_timeout)
 	        #print "response file: " + response
 	        self.client.write( self.file+ "\n")
 	        response = ''
                 #reading asked protocol line : Protocol (scp or ftp) [ftp]:
-                response = self.client.read_until('rotocol', self.timeout)
+                response = self.client.read_until('rotocol', self.read_timeout)
                 self.client.write( self.transfert_type + "\n")
                 response = ''
 	        #reading asked section line : Section (all|chassis [all])::
-	        response = self.client.read_until('ection', self.timeout) # a new feature of brocade
+	        response = self.client.read_until('ection', self.read_timeout) # a new feature of brocade
 	        if "section" in response:
 	            self.client.write( "all" + "\n") # we send "all" in response
 		#reading asked section line : configupload must use secure protocol :
@@ -820,7 +1104,7 @@ class Switch(object):
 	            print "*** TelnetSave *** The switch is in secure mode :" + response
 	        response = ''
                 #reading asked password line : Password:
-                response = self.client.read_until('assword', self.timeout)
+                response = self.client.read_until('assword', self.read_timeout)
                 #print "response pass: " + response
                 #sending the password for the transfert
 	        print 'Sending password for the transfert'
@@ -829,7 +1113,7 @@ class Switch(object):
         else: # For Cisco switch :
             response = '' #reading asked section line : configupload must use secure protocol :
             #sending the password for the transfert
-            response = self.client.read_until('assword', self.timeout)
+            response = self.client.read_until('assword', self.read_timeout)
             #print "response : " + response
 	    if 'assword' in response: 
 	        print 'Sending password for the transfert'
@@ -838,7 +1122,7 @@ class Switch(object):
                 print '*** TelnetSave *** Connection refused by the SSH or FTP Server :' + response
                 server_thread._Thread__stop()
                 self.client.close()
-                sys.exit(2)
+                return False
 	    # dealing if the switch ask to add the SSH key on the switch
 	    elif 'authenticity' in response:
 	        print 'Adding the SSH server key on the switch'
@@ -852,22 +1136,21 @@ class Switch(object):
             print '*** TelnetSave *** Transfert Failed !'
             server_thread._Thread__stop()
             self.client.close()
-            sys.exit(2)
+            return False
 
         if result == 'backup OK':
             print "Transfert and Backup successfully done in the file :" + self.file
             server_thread._Thread__stop()
             self.client.close()
-            sys.exit(0)
+            return True
         else:
             print '*** TelnetSave *** Transfert Failed !'
             server_thread._Thread__stop()
             self.client.close()
-            sys.exit(2)
+            return False
 	
 ################################################################
 ## GetMcdataConfig Function
-## 
 ################################################################
     def GetMcdataConfig(self):
         """
@@ -891,27 +1174,27 @@ class Switch(object):
     		pass
 	else:                               # If we don't fail then the page isn't protected
 		print "***MCDATA*** Unable to open The switch URL : " +str(switchurl)+" ! Maybe you need a proxy in order to go to this URL ?!"
-    		sys.exit(1)
+    		return False
     
 	if not hasattr(e, 'code') or e.code != 401:                 # we got an error - but not a 401 error
    		print "***MCDATA*** The switch isn't protected by authentication. But we failed for another reason."
-    		sys.exit(1)
+    		return False
 
 	authline = e.headers.get('www-authenticate', '')                # this gets the www-authenticat line from the headers - which has the authentication scheme and realm in it
 	if not authline:
     		print '***MCDATA*** A 401 error without an authentication response header - very weird.'
-    		sys.exit(1)
+    		return False
     
 	authobj = re.compile(r'''(?:\s*www-authenticate\s*:)?\s*(\w*)\s+realm=['"](\w+\s\w+)['"]''', re.IGNORECASE)          # this regular expression is used to extract scheme and realm
 	matchobj = authobj.match(authline)
 	if not matchobj:                                        # if the authline isn't matched by the regular expression then something is wrong
     		print '***MCDATA*** The authentication line is badly formed.'
-    		sys.exit(1)
+    		return False
 	scheme = matchobj.group(1) 
 	realm = matchobj.group(2)
 	if scheme.lower() != 'basic':
     		print '***MCDATA*** Only works with BASIC authentication.'
-    		sys.exit(1)
+    		return False
 
 	base64string = base64.encodestring('%s:%s' % (self.user, self.password))[:-1]
 	authheader =  "Basic %s" % base64string
@@ -920,7 +1203,7 @@ class Switch(object):
     		handle = urllib2.urlopen(req)
 	except IOError, e:                  # here we shouldn't fail if the username/password is right
     		print "***MCDATA*** It looks like the username or password is wrong."
-    		sys.exit(1)
+    		return False
 	server = urlparse(switchurl)[1].lower()            # server names are case insensitive, so we will convert to lower case
 	test = server.find(':')
 	if test != -1: server = server[:test]           # remove the :port information if present, we're working on the principle that realm names per server are likely to be unique...
@@ -938,12 +1221,12 @@ class Switch(object):
     		handle2 = urllib2.urlopen(req2)
 	except IOError, e:
     		print "***MCDATA*** Unable to get the swconfig.xml file from the switch !"
-    		sys.exit(1)
+    		return False
 	theconfig = handle2.read()
 
 	if len(theconfig) == 0:
 		print '***MCDATA*** Nothing in the swconfig.xml file !'
-		sys.exit(1)
+		return False
 	#now parsing the XML file in order to get the name of the switch.
 	dom1 = parseString(theconfig)
 	try:
@@ -951,23 +1234,17 @@ class Switch(object):
 		self.name = tagnames.firstChild.data
 	except:
 		print '***MCDATA*** Unable to find the name of the switch in swconfig.xml !'
-	    	sys.exit(1)
-
-        """
-	if not self.ChangeDir():
-	    print "***MCDATA*** Unable to go in the directory :"+str(self.name)
-	    sys.exit(2)
-	"""
+	    	return False
 
 	# we try to make a file in order to save the configuration file
 	self.file = self.name + '__' + time.strftime('%Y%m%d__%H%M',time.localtime()) +'__'+ 'mcdata.xml'
 
         if not self.SaveFileInDirectory(theconfig, self.file, self.name):
             print "Unable to save the configuration in the file :" + self.file
-            sys.exit(2)
+            return False
 
         print "Successfully saved the configuration in the file :" + self.file
-        sys.exit(0)
+        return True
 
 
 ################################################################
@@ -975,25 +1252,36 @@ class Switch(object):
 ################################################################
 
 ################################################################
-## Generate 1024 bits SSH RSA key (Paramiko)
+## Generate 1024 bits SSH key for the SSH Server (Paramiko)
 ################################################################
-def GenerateRSAKey(keylength=1024):
+def GenerateServerKey(type='RSA', keylength=1024):
     """
-    GenerateRSAKey(keylength) -> None
-    Create a new 1024 bits RSA key for the SSH server on your host.
-    The private key is saved in the file 'new_server_rsa.key' on your current directory. The public key is saved in the file 'new_server_rsa.pub'.
+    GenerateServerKey(type, keylength) -> None
+    Create a new 1024 bits key for the SSH server on your host. The Key can be an RSA (default) or DSS key.
+    The private key is saved in the file 'new_server_'type'.key' on your current directory. The public key is saved in the file 'new_server_'type'.pub'.
+
+    @param type : str
     @param keylength : int
     """
-    key = paramiko.RSAKey.generate(int(keylength)) #generate the private key
-    key.write_private_key_file('new_server_rsa.key') #saving the private key
-    file = open('new_server_rsa.pub','w') #create the file for public key
-    file.write("ssh-rsa " +key.get_base64())
-    file.close()
+    if type == 'RSA':
+        key = paramiko.RSAKey.generate(int(keylength)) #generate the private key
+	public_key_header = "ssh-rsa "
+    elif type == 'DSS':
+        key = paramiko.DSSKey.generate(int(keylength)) #generate the private key
+	public_key_header = "ssh-dss "
+    else:
+	print "*** GenerateServerKey *** Not a good type of key. Possible values are RSA or DSS !"
+	raise InputError("*** GenerateServerKey ***", "Not a good type of key. Possible values are RSA or DSS !")
+    
+    filename = 'new_server_%s' % str(type)
+    key.write_private_key_file(filename + '.key') #saving the private key
+    public_file = open(filename + '.pub','w') #create the file for public key
+    public_file.write(public_key_header + key.get_base64())
+    public_file.close()
 
 ################################################################
 ## SCPServer class (Paramiko)
 ################################################################
-
 class SCPServer(paramiko.ServerInterface):
     """
     SCPServer()
@@ -1042,12 +1330,10 @@ class SCPServer(paramiko.ServerInterface):
 ################################################################
 ## SSHServer used for SCP (paramiko)
 ###############################################################
-
-#def SSHserver_launch(switch, client_queue, server_queue, timeout):
 def SSHserver_launch(switch, server_queue, timeout):
         """
         SSHserver_launch(switch, server_queue, timeout): -> None
-        Launch a SSH Server on the host. It grabs the switch's configuration file by SCP and store it in a folder with the switch's name.
+        Launch an SSH Server on the host. It grabs the switch's configuration file by SCP and store it in a folder with the switch's name.
         The output is saved in a file's name pattern : switchname__time__switchtype.txt.
 
         @param switch: the switch object
@@ -1056,11 +1342,13 @@ def SSHserver_launch(switch, server_queue, timeout):
         @param timeout: timeout
         @type timeout: int
         """
-	host_key = paramiko.RSAKey(filename='server_rsa.key')
-
-	# you can test with DSS keys
-	#host_key = paramiko.DSSKey(filename='server_dss.key')
-
+	if switch.server_key_type == 'RSA':
+	    host_key = paramiko.RSAKey(filename=switch.server_key)
+        elif switch.server_key_type == 'DSS':
+	    host_key = paramiko.DSSKey(filename=switch.server_key)
+        else:
+	    print "***SSHServer*** Wrong type of SSH key. Possible values are RSA or DSS !"
+	    raise SCPError("SSHServer","Wrong type of SSH key. Possible values are RSA or DSS !")
 	#### now start the SSH server in order to get the config
 	try:
 		sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -1073,62 +1361,59 @@ def SSHserver_launch(switch, server_queue, timeout):
 	except Exception, e:
 		print '***SSHServer*** Could not bind on port 22' + str(e)
     		traceback.print_exc()
-    		sys.exit(2)
+    		raise SCPError("SSHServer","Could not bind on port 22 !")
 
 	try:
-		#we start the SSH server on only one connection
+		#we start the SSH server for only one connection
    		sock.listen(1)
 		print 'SSHServer : Listening for connection ...'
     		client, addr = sock.accept()
 	except Exception, e:
     		print '***SSHServer*** Listen/accept failed:' + str(e)
     		traceback.print_exc()
-    		sys.exit(2)
+    		raise SCPError("SSHServer", "Listen/accept failed !")
 	try:
     		t = paramiko.Transport(client)
     
-    		#t.set_hexdump(True)            # use it only for debugging purpose !
-    		try:
-        		t.load_server_moduli()
-    		except:
+		if switch.debug:
+			t.set_hexdump(True)            # use it only for debugging purpose !
+		if not t.load_server_moduli():
         		print '***SSHServer*** (Failed to load moduli -- gex will be unsupported.)'
-        		raise
     		t.add_server_key(host_key)
+		#instantiate an SCP Server
     		SCPserver = SCPServer(switch.transfert_user,switch.transfert_password)
     		try:
         		t.start_server(server=SCPserver)
     		except SSHException:
-        		print '***SSHServer*** SSH negociation failed.'
-        		sys.exit(2)
+        		print '***SSHServer*** SSH negociation failed !'
+        		raise SCPError('***SSHServer***', 'SSH negociation failed !')
 
     		# waiting timeout seconds for a channel to be opened by the switch
-    		serv_chan = t.accept(timeout)
-    		if serv_chan is None:
-        		print '***SSHServer*** No channel.'
+    		serv_channel = t.accept(timeout)
+    		if serv_channel is None:
+        		print '***SSHServer*** No channel before the timeout !'
         		server_queue.put('backup FAIL')
-			sys.exit(2)
 		
 		# waiting for the scp command from the switch. See the SCPServer class definition
     		SCPserver.SCPevent.wait(timeout)
     		if not SCPserver.SCPevent.isSet():
-        		print '***SSHServer*** Client never ask for an SCP transfer.'
+        		print '***SSHServer*** Client has never asked for an SCP transfer.'
 			server_queue.put('backup FAIL')	
-			sys.exit(2)
+
 		## Beginning of the SCP protocol : we acknowledge the command received and the rest of the transfert with zero. One zero for the each line of the SCP commands.
 		## a really bad hack :-(
 		## but it really works :-)
-    		serv_chan.send('\0\0\0\\')
+    		serv_channel.send('\0\0\0\\')
     		
     		# we are reading the command sent by the switch and we verify it
-    		c = serv_chan.makefile('r')
-    		r_command = c.readline().strip('\r\n')
-    		c.close()
-    		if not r_command.startswith('C'):
-        		print '***SSHServer*** Expecting a C command for the SCP transfert, but we received something else !'
+    		channel_file = serv_channel.makefile('r')
+    		received_command = channel_file.readline().strip('\r\n')
+    		channel_file.close()
+    		if not received_command.startswith('C'):
+			print '***SSHServer*** Expecting a C command for the SCP transfert, but we received: %s.' % str(received_command)
 			server_queue.put('backup FAIL')
-			sys.exit(2)
 		# we get the differents arguments of the command
-    		r_perm, r_length, r_name = r_command.split(" ")
+    		r_perm, r_length, r_name = received_command.split(" ")
 		# we get the perms, but don't really use it :-(
     		perms = r_perm[1:-1]
     		perms = int(perms, 8)
@@ -1137,19 +1422,22 @@ def SSHserver_launch(switch, server_queue, timeout):
     		if length == 0:
 	    		print '***SSHServer*** Error the length of the file is zero byte !'
 	    		server_queue.put('backup FAIL')
-			sys.exit(2)
+			
 		
-		s = serv_chan.makefile('r')
+		s = serv_channel.makefile('r')
     		data = []
     		try:
 	    		while True:
 				#data += s.next()
 				data.append(s.next())
+				if switch.debug:
+					print 'SSH Server: received data : %s' % str(data[-1])
 				if len(data)>length:
 					moredata = data[length:]
                 			data = data[:length]
                 			if moredata != '\0':
-                    				print 'Got more '+ str(len(moredata))+ ' bytes than expected, ignoring it !'				
+                    				print 'Got more '+ str(len(moredata))+ ' bytes than expected, ignoring it !'
+						
     		except:
 			#calculating the percent file received
 			done = (len(data)*100/length)
@@ -1170,26 +1458,18 @@ def SSHserver_launch(switch, server_queue, timeout):
 		print 'SSHServer : received ' + str(done) + '%. length received = ' + str(len(data))
 		'''
                 #closing all channels and transports
-		serv_chan.shutdown_write()
-    		serv_chan.send_exit_status(0) #sending exit status OK
-    		serv_chan.close()
+		serv_channel.shutdown_write()
+    		serv_channel.send_exit_status(0) #sending exit status OK
+    		serv_channel.close()
     		t.close()
 
     		if len(data) == 0:
     			print '***SSHServer*** Nothing in the file received'
 			server_queue.put('backup FAIL')
-			sys.exit(2)
+			
     		if len(data) < length:
 	   		print '***SSHServer*** Received not complete !'
 			server_queue.put('backup FAIL')
-			sys.exit(2)
-		
-		# getting the file name by the client thread
-		#try:
-			#backupname = client_queue.get(True, switch.queue_timeout)
-		#except:
-			#print '***SSHServer*** Unable to have the name of the backup file by the client !'
-			#sys.exit(2)
 
                 if not switch.SaveFileInDirectory(data, switch.file, switch.name):
                     print '***SSHServer*** Unable to create and save the file :' + str(switch.file)
@@ -1206,14 +1486,12 @@ def SSHserver_launch(switch, server_queue, timeout):
 ################################################################
 ## FTPServer used for FTP (pyftpdlib)
 ################################################################
-
 class FTPServer(threading.Thread):
 	"""
 	FTPServer(threading.Thread)
 	Launch an FTP Server on the host. It grabs the switch's configuration file by FTP and store it in a folder with the switch's name.
 	The output is saved in a file's name pattern : switchname__daytime__switchtype.txt.
 	"""
-	#def __init__(self, switch, client_queue, server_queue, timeout):
 	def __init__(self, switch, server_queue, timeout):
 		"""
 		@param switch: the switch object
@@ -1227,7 +1505,6 @@ class FTPServer(threading.Thread):
 		self.hostname = switch.address
 		self.FTPuser = switch.transfert_user
 		self.FTPpassword = switch.transfert_password
-		#self.client_queue = client_queue
 		self.server_queue = server_queue
 		self.interface = switch.interface
 		self.timeout = timeout
@@ -1235,18 +1512,11 @@ class FTPServer(threading.Thread):
 		self.file = switch.file
 
     	def run(self):
-		
-		#try:
-			#self.file = self.client_queue.get(True, self.switch.queue_timeout)
-		#except:
-			#print '***FTPServer*** Unable to have the name of the backup file by the client !'
-			#self.server_queue.put('backup FAIL')
-			#sys.exit(2)
 		# Changing the working directory
                 if not self.switch.ChangeDir(self.switch.name):
-                    print "***FTPServer*** Unable to go the directory with this switch's name :"+str(self.switch.name)
+                    print "***FTPServer*** Unable to go the directory with this switch's name : "+str(self.switch.name)
 		    self.server_queue.put('backup FAIL')
-                    sys.exit(2)
+                    raise FTPError("FTPServer", "Unable to go the directory with this switch's name")
 		
 		# we verify if this backup doesn't exist
 		if (os.path.isfile(self.file)):
@@ -1256,7 +1526,7 @@ class FTPServer(threading.Thread):
 		        os.rename(self.file, self.file2)
 		    except:
 		        print "***FTPServer*** Unable to rename the file:"+str(self.file)
-			sys.exit(2)
+			raise FTPError("FTPServer", "Unable to rename the file")
 
 		# Instantiate a dummy authorizer for managing 'virtual' users
     		authorizer = ftpserver.DummyAuthorizer()
@@ -1268,8 +1538,7 @@ class FTPServer(threading.Thread):
     		# Define a customized banner (string returned when client connects)
     		ftp_handler.banner = "FTP ready."
 		ftp_handler.timeout = self.timeout
-    		# Specify a masquerade address and the range of ports to use for
-    		# passive connections.  Decomment in case you're behind a NAT.
+    		# Specify a masquerade address and the range of ports to use for passive connections.
 		if self.switch.nat:
     		    ftp_handler.masquerade_address = self.switch.nat
     		    ftp_handler.passive_ports = range(60000, 65535)
@@ -1319,8 +1588,75 @@ class FTPServer(threading.Thread):
 			ftpserver.CallLater(2, self.FTPcheck, (ftpserver))
 			print "FTPServer : waiting switch's connection..."
 
+############################################
+# Class for raising exceptions
+############################################
+class Error(Exception):
+    """Base class for exceptions in this module."""
+    pass
 
+class InputError(Error):
+    """Exception raised for errors in the input.
 
+    Attributes:
+        expr -- input expression in which the error occurred
+        msg  -- explanation of the error
+    """
+
+    def __init__(self, expr, msg):
+        self.expr = expr
+        self.msg = msg
+
+class CommandError(Error):
+    """Exception raised for errors with connection.
+
+    Attributes:
+        expr -- input expression in which the error occurred
+        msg  -- explanation of the error
+    """
+
+    def __init__(self, expr, msg):
+        self.expr = expr
+        self.msg = msg
+
+class ConnectionError(Error):
+    """Exception raised for errors with connection.
+
+    Attributes:
+        expr -- input expression in which the error occurred
+        msg  -- explanation of the error
+    """
+
+    def __init__(self, expr, msg):
+        self.expr = expr
+        self.msg = msg
+
+class FTPError(Error):
+    """Exception raised for errors with connection.
+
+    Attributes:
+        expr -- input expression in which the error occurred
+        msg  -- explanation of the error
+    """
+
+    def __init__(self, expr, msg):
+        self.expr = expr
+        self.msg = msg
+
+class SCPError(Error):
+    """Exception raised for errors with connection.
+
+    Attributes:
+        expr -- input expression in which the error occurred
+        msg  -- explanation of the error
+    """
+
+    def __init__(self, expr, msg):
+        self.expr = expr
+        self.msg = msg
+
+############################################
+# END 
 ############################################
 if __name__ == '__main__':
     pass

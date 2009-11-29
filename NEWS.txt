@@ -1,9 +1,17 @@
-Version 0.95   - 02 March 2009
+Version 0.95   - 19 November 2009
   * changing -d option to --dir
-  * adding -d option for debugging level
+  * adding -d option for debugging purpose
   * using logging to add a log file
   * creating SANagios : a plugin for checking switches with commands
   * rewrite code for improving it
+  * Using pyftpdlib version 0.5.2
+  * Using paramiko version 1.7.6
+  * Beginning to develop a GUI
+  * Added the capacity to use DSS Keys
+  * Creation of a real module
+  * Added Specific Exceptions
+  * Code improvements
+  * Added the capacity to specify the known_hosts and server_key files
 
 Version 0.94   - 02 March 2009
   * Fixed Bug on sshcommand on switch on degraded shell. No timeout for long commands.
