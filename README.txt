@@ -61,33 +61,33 @@ CONTENTS
   	If you want to build an executable for windows with py2exe, just run : "python setup-py2exe.py py2exe"
 
         If you want to use the windows built package, unzip the package Save-Simply-your-San-win32-XX.zip in the directory of your choice.
-	Run SaveSimplyyourSAN.exe
+	Run SaveSimplyyourSAN-CLI.exe
 
    3.2. Help?
 
       Run SaveSimplyyourSAN.exe -h
 	For making a backup of the running-config of a cisco switch by SCP with a SSH connection :
-		SaveSimplyyourSAN -i 192.168.0.1 -u admin -p password -s cisco -t scp -c ssh
+		SaveSimplyyourSAN-CLI -i 192.168.0.1 -u admin -p password -t scp -c ssh
 	Or more simply (SCP and SSH connection are values by default) :
-		SaveSimplyyourSAN -i 192.168.0.1 -u admin -p password -s cisco
+		SaveSimplyyourSAN-CLI -i 192.168.0.1 -u admin -p password
 
 	For making a backup of the configuration of brocade switch by FTP with a telnet connection :
-		SaveSimplyyourSAN -i 192.168.0.1 -u admin -p password -s brocade -t ftp -c telnet
+		SaveSimplyyourSAN-CLI -i 192.168.0.1 -u admin -p password -t ftp -c telnet
 
 	For making a backup of the configuration of brocade switch by SCP and specify the local network address 192.168.1.50 to which the SSH Server will bind :
-		SaveSimplyyourSAN -i 192.168.0.1 -u admin -p password -s brocade -l 192.168.1.50
+		SaveSimplyyourSAN-CLI -i 192.168.0.1 -u admin -p password -l 192.168.1.50
 
 	For making a backup of the configuration of brocade switch by FTP and specify the NAT address of the IP Address (192.168.1.52) of the local FTP server :
-		SaveSimplyyourSAN -i 192.168.0.1 -u admin -p password -s brocade -t ftp -n 192.168.1.52
+		SaveSimplyyourSAN-CLI -i 192.168.0.1 -u admin -p password -t ftp -n 192.168.1.52
 
 	For making a backup of a McData switch and redirect the result in a file and redirect errors (works on windows too):
-		SaveSimplyyourSAN -i 192.168.0.1 -u admin -p password -s mcdata >mcdata-backup.log 2>&1
+		SaveSimplyyourSAN-CLI -i 192.168.0.1 -u admin -p password -s mcdata >mcdata-backup.log 2>&1
 
 	For making a backup of a configuration of a McData switch (grab the output of the command "show all" by telnet)
-		SaveSimplyyourSAN -i 192.168.0.1 -u admin -p password -s mcdata -c telnet -e "show all"
+		SaveSimplyyourSAN-CLI -i 192.168.0.1 -u admin -p password -s mcdata -c telnet -e "show all"
 
 	For making a supportshow a brocade switch by SSH :
-		SaveSimplyyourSAN -i 192.168.0.1 -u admin -p password -s brocade -c ssh -e "supportshow"
+		SaveSimplyyourSAN-CLI -i 192.168.0.1 -u admin -p password -s brocade -c ssh -e "supportshow"
 
 	Now you can schedule your backup ! :-)
 

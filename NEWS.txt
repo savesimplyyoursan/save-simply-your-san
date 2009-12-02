@@ -3,6 +3,7 @@ Version 0.95   - 02 December 2009
   * adding -d option for debugging purpose
   * adding -z or --zip option for zipping output
   * rewrite code for improving it
+  * adding the capability to discover the switch's type based on the prompt
   * Using pyftpdlib version 0.5.2
   * Using paramiko version 1.7.6
   * Beginning to develop a GUI
