@@ -14,7 +14,7 @@ import os
 import os.path
 import socket
 import traceback
-
+import zipfile
 
 import time
 import re
@@ -56,7 +56,7 @@ class Switch(object):
     Switch(object)
     A class for the switch object
     """
-    def __init__(self, address, user, password, switch_type='cisco', connection_type="ssh", transfert_type="scp", read_timeout=5.0, interface='', nat='', dir="no", pass_strong=15, ssh_shell=False, queue_timeout=20, prompt_timeout=4.0, debug=False, known_hosts='known_hosts', server_key='server_rsa.key', server_key_type='RSA'):
+    def __init__(self, address, user, password, switch_type='cisco', connection_type="ssh", transfert_type="scp", read_timeout=5.0, interface='', nat='', dir="no", pass_strong=15, ssh_shell=False, queue_timeout=20, prompt_timeout=4.0, debug=False, known_hosts='known_hosts', server_key='server_rsa.key', server_key_type='RSA', zipped='no'):
         """
         Definition of switch's attributes based on the switch's type
 
@@ -92,6 +92,8 @@ class Switch(object):
 	@type server_connection_type : str
 	@param prompt_timeout : the timeout for waitin the prompt to appear
 	@type prompt_timeout: float
+	@param zipped : output's files need to be zipped
+	@type zipped: str
         """
         self.address = address
         self.type = switch_type
@@ -118,6 +120,7 @@ class Switch(object):
 	self.known_hosts = known_hosts #the known_hosts file
 	self.server_key_type = server_key_type
 	self.server_key = server_key #the known_hosts file
+	self.zipped = zipped
         # defining the command that will be used to verify the type of switch
 	if self.type == "brocade":
 	    self.commandtest = "switchshow"
@@ -232,7 +235,6 @@ class Switch(object):
 		    self.name = ''
 		    self.commandtest = "hostname"
 		    if self.debug:
-			#print "Guessed an OTHERS equipment, name '%s', and prompt '%s'" % (self.name, self.prompt)
 			print "Guessed an OTHERS equipment and prompt '%s'" % (self.prompt)
                     discovered = True
 		    return True
@@ -366,7 +368,6 @@ class Switch(object):
 #################################################
     def SaveFileInDirectory(self, input, name, directory):
         """
-	(old name : SaveFileInDirectory(self, input, name) -> Boolean)
 	SaveFileInDirectory(self, output, name, directory): -> Boolean
         Save the output in the file specified in the directory specified. Return True or False.
 
@@ -378,7 +379,7 @@ class Switch(object):
         @rtype: bool
         """
         if not self.ChangeDir(directory):
-            print "***SaveFileInDirectory*** Unable to go in the directory : "+str(directory)
+            print "***SaveFileInDirectory*** Unable to go into the directory : "+str(directory)
             return False
         # first we verify if this backup doesn't exist
         if (os.path.isfile(name)):
@@ -391,13 +392,20 @@ class Switch(object):
 	        print "***SaveFileInDirectory*** Unable to rename the file: "+str(name)
 	        return False
         try:
-                backup = open(name, 'w')
+		backup = open(name, 'w')
                 backup.write(input)
                 backup.close()
+		if self.zipped == 'yes':
+		    zname = str(name) + '.zip'
+		    zbackup = zipfile.ZipFile(zname, "w")
+		    zbackup.write(name)
+		    zbackup.close()
+		    os.remove(name)
+		    print "Successfully saved the file:"+str(zname)
+		else:
+		    print "Successfully saved the file:"+str(name)
         except:
                 return False
-        
-	print "Successfully saved the file:"+str(name)
 	return True
 
 ################################################################
@@ -537,24 +545,6 @@ class Switch(object):
 		        if self.prompt in lines[-1]:
 		            break
 	        response = ''.join(response)
-		"""
-                rlist, wlist, xlist = select.select([shell],[],[])
-                elapsed = time.time() - time_start
-                if elapsed >= self.timeout:
-                    print "Timeout with the switch's test"
-                    break
-	        if commandseen:
-                    # when the flag is set we break and get out from the while true
-                    shell.close() #closing this shell. We've done the job
-		    break
-	        if shell in rlist:
-                    response += shell.recv(1024).strip()
-		    print response
-		    if (self.prompt + " " + self.commandtest) in response:
-		        commandseen = True # set the flag
-			#print "commandseen"
-			pass
-		"""
             else: # for macdata or cisco switches
                 print "***SSHTestType*** Not the good type of switch: " + str(error)
                 self.client.close()
@@ -700,9 +690,8 @@ class Switch(object):
 		       raise ConnectionError("SSHCommand",'SSHCommand: Timeout when reading line: "%s" !' % str(shell_line))
 	           if self.debug:
 		       print "SSHCommand shell line: '%s' " % str(shell_line)
-
 		   output.append(shell_line) #concatenate the output
-	           if ("--More--" in shell_line) or ("Type <CR>" in shell_line):
+	           if ("more" in shell_line.lower()) or ("<cr>" in shell_line.lower()):
                        print "I'm sending the space caracter to continue."
                        shellfile.write(chr(32)) # chr(32) is the space caracter
 		       shellfile.flush()
@@ -722,18 +711,13 @@ class Switch(object):
 ################################################################
     def SSHSave(self, server_queue, server_thread):
         """
-        SSHSave(self, client, server_queue, server_thread) -> None
+        SSHSave(self,server_queue, server_thread) -> None
         Tell the switch to send its backup config file to the SSH or the FTP Server.
 
-        @param client: an SSH connection
-        @param switch: the switch object
-        @type switch: Switch
         @param server_queue: server queue
         @param server_thread: server Thread
         @type server_thread: Thread
         """
-        # Sending the name of the file that will be transmetted to the server by the queue
-        #client_queue.put(self.file)
         try:    
             shell = self.client.invoke_shell()
 	except SSHException:
@@ -745,8 +729,9 @@ class Switch(object):
 	shell.settimeout(self.read_timeout) #set timeout for commands
 	shellfile = shell.makefile('rw')
 	ret = '\r' # defining the return caracter
-	server_thread.start()
+	server_thread.start() # starting the Server
         # sending the commandtest to the switch
+	#time.sleep(2)
         shellfile.write(self.commandsave + ret)
         shellfile.flush()
         commandseen = False # a flag that tell if the command has been seen in the output line
@@ -754,24 +739,28 @@ class Switch(object):
 	while True:
             if shell.recv_ready():
 		shell_line = shell.recv(100)
-		#print "shell : "+ shell_line
-                if self.prompt in shell_line:
+		if self.debug:
+		    print "SSHSave shell line: '%s'" % str(shell_line)
+		if self.prompt in shell_line:
+                #if self.commandsave in shell_line:
+		    if self.debug:
+		        print "SSHSave commandseen=True"
                     commandseen = True
 		    pass
                 if commandseen:
-                    if 'authenticity' in shell_line:
+                    if 'authenticity' in shell_line.lower():
                         # on cisco switch it asks for adding the SSH server key
                         print 'Adding the SSH server key to the switch'
 			shellfile.write('yes' + ret)
                         shellfile.flush()
                         pass
                     #reading asked line : Password:
-                    elif 'assword' in shell_line:
+                    elif 'assword' in shell_line.lower():
                         print "sending transfert's password"
 			shellfile.write(self.transfert_password  + ret)
                         shellfile.flush()
                         break
-                    elif ('refused' in shell_line) or ('failed'in shell_line) :
+                    elif ('refused' in shell_line.lower()) or ('failed'in shell_line.lower()) :
 			print '***SSHSave*** Connection refused by the SSH or FTP Server : ' + shell_line
 			server_thread._Thread__stop()
                         self.client.close()
@@ -783,17 +772,17 @@ class Switch(object):
                         shellfile.flush()
                         pass
 		    #reading asked section line : configupload must use secure protocol :
-		    elif 'must use secure' in shell_line:
+		    elif 'must use secure' in shell_line.lower():
 	                print "***SSHSave*** the switch is in secure mode : " + shell_line
 			break
                     #reading asked line : Protocol (scp or ftp) [ftp]:
-                    elif 'rotocol' in shell_line:
+                    elif 'rotocol' in shell_line.lower():
 		        print "sending transfert's protocol"
                         shellfile.write(self.transfert_type + ret)
                         shellfile.flush()
                         pass
                     #reading asked line : Server Name or IP Address [host]:
-                    elif '[host]' in shell_line:
+                    elif '[host]' in shell_line.lower():
 		        print "sending destination host"
 	                if not self.nat:
 	                    if not self.interface:
@@ -805,13 +794,13 @@ class Switch(object):
                         shellfile.flush()
                         pass
                     #reading asked line : User Name [user]:
-                    elif 'ser' in shell_line:
+                    elif 'user' in shell_line.lower():
 		        print "sending transfert's user"
                         shellfile.write(self.transfert_user + ret)
                         shellfile.flush()
                         pass
                     #reading asked line : File Name [config.txt]:
-                    elif 'ile' in shell_line:
+                    elif 'file' in shell_line.lower():
 		        print "sending destination's file"
                         shellfile.write(self.file + ret)
                         shellfile.flush()
@@ -838,7 +827,7 @@ class Switch(object):
 	    return False
 	    
         if result == 'backup OK':
-            print 'Transfert and Backup successfully done ! in the file : '+ self.file
+            print 'Transfert and Backup successfully done !'
 	    server_thread._Thread__stop()
 	    self.client.close()
             return True
@@ -996,7 +985,7 @@ class Switch(object):
 	    if self.debug:
 		print "TelnetCommand shell line: '%s'" % str(shell_line)
 	    # on brocade, it will ask you to press enter to continue
-            if ("--More--" in response) or ("Type <CR>" in response):
+            if ("more" in shell_line.lower()) or ("<cr>" in shell_line.lower()):
                 print "I'm Sending the space caracter to continue."
                 self.client.write(chr(32)) # chr(32) is the space caracter
                 self.client.write('\n') # Also send return in case of the last line.
@@ -1020,28 +1009,29 @@ class Switch(object):
         """
         server_thread.start() #start the FTP or SCP Server
         # sending the command
-        print 'Sending the command to the switch : ' + self.commandsave
+        print 'Sending the command to the switch:' + self.commandsave
         self.client.write(self.commandsave + "\n")
         if (self.type == "brocade"):
             # we need to send the protocol, host, user, file and password to begin the transfert.
             response = '' # erasing the last response	
             #reading asked protocol line : Protocol (scp or ftp) [ftp]:
             response = self.client.read_until('rotocol', self.read_timeout)
-            #print "response prot: " + response
-            if 'rotocol' in response:
-        	#print "response prot: " + response
+	    if self.debug:
+		print "TelnetSave shell line: '%s'" % str(response)
+            if 'rotocol' in response.lower():
         	self.client.write( self.transfert_type + "\n")
         	response = ''
         	#reading asked host line : Server Name or IP Address [host]:
         	response = self.client.read_until('host', self.read_timeout)
+	        if self.debug:
+		    print "TelnetSave shell line: '%s'" % str(response)
 		#reading asked section line : configupload must use secure protocol :
-        	if 'must use secure protocol' in response:
+        	if 'must use secure protocol' in response.lower():
         	    print "*** TelnetSave *** The switch is in secure mode :" + response
                     print '*** TelnetSave *** Transfert Failed !'
                     server_thread._Thread__stop()
                     self.client.close()
                     raise ConnectionError('*** TelnetSave ***','The switch is in secure mode !')
-        	#print "response host: " + response
         	if not self.nat:
         	    if not self.interface:
         		self.client.write( str(socket.gethostbyname(socket.gethostname())) + "\n")
@@ -1052,27 +1042,32 @@ class Switch(object):
         	response = ''
         	#reading asked user line : User Name [user]:
         	response = self.client.read_until('ser', self.read_timeout)
-        	#print "response user: " + response
+	        if self.debug:
+		     print "TelnetSave shell line: '%s'" % str(response)
         	self.client.write( self.transfert_user + "\n")
         	response = ''
         	#reading asked file line : File Name [config.txt]:
         	response = self.client.read_until('ile', self.read_timeout)
-        	#print "response file: " + response
+		if self.debug:
+		     print "TelnetSave shell line: '%s'" % str(response)
         	self.client.write( self.file + "\n")
         	response = ''
         	#reading asked section line : Section (all|chassis [all])::
         	response = self.client.read_until('ection', self.read_timeout)
-        	if "ection" in response:
+		if self.debug:
+		     print "TelnetSave shell line: '%s'" % str(response)
+        	if "section" in response.lower():
         	    self.client.write( "all" + "\n")
         	response = ''
         	#reading asked password line : Password:
         	response = self.client.read_until('assword', self.read_timeout)
-        	#print "response pass: " + response
+		if self.debug:
+		     print "TelnetSave shell line: '%s'" % str(response)
         	#sending the password for the transfert
         	print 'Sending password for the transfert'
         	self.client.write( self.transfert_password + "\n")
 
-            elif 'host' in response:
+            elif 'host' in response.lower():
                 if not self.nat:
                     if not self.interface:
                         self.client.write( str(socket.gethostbyname(socket.gethostname())) + "\n")
@@ -1083,20 +1078,26 @@ class Switch(object):
                 response = ''
         	#reading asked user line : User Name [user]:
         	response = self.client.read_until('ser', self.read_timeout)
-        	#print "response user: " + response
+		if self.debug:
+		     print "TelnetSave shell line: '%s'" % str(response)
         	self.client.write( self.transfert_user + "\n")
 	        response = ''
 	        #reading asked file line : File Name [config.txt]:
 	        response = self.client.read_until('ile', self.read_timeout)
-	        #print "response file: " + response
+		if self.debug:
+		     print "TelnetSave shell line: '%s'" % str(response)
 	        self.client.write( self.file+ "\n")
 	        response = ''
                 #reading asked protocol line : Protocol (scp or ftp) [ftp]:
                 response = self.client.read_until('rotocol', self.read_timeout)
+		if self.debug:
+		     print "TelnetSave shell line: '%s'" % str(response)
                 self.client.write( self.transfert_type + "\n")
                 response = ''
 	        #reading asked section line : Section (all|chassis [all])::
 	        response = self.client.read_until('ection', self.read_timeout) # a new feature of brocade
+		if self.debug:
+		     print "TelnetSave shell line: '%s'" % str(response)
 	        if "section" in response:
 	            self.client.write( "all" + "\n") # we send "all" in response
 		#reading asked section line : configupload must use secure protocol :
@@ -1105,26 +1106,28 @@ class Switch(object):
 	        response = ''
                 #reading asked password line : Password:
                 response = self.client.read_until('assword', self.read_timeout)
-                #print "response pass: " + response
+		if self.debug:
+		     print "TelnetSave shell line: '%s'" % str(response)
                 #sending the password for the transfert
 	        print 'Sending password for the transfert'
                 self.client.write( self.transfert_password + "\n")
 
         else: # For Cisco switch :
-            response = '' #reading asked section line : configupload must use secure protocol :
+            response = ''
             #sending the password for the transfert
             response = self.client.read_until('assword', self.read_timeout)
-            #print "response : " + response
-	    if 'assword' in response: 
+	    if self.debug:
+		print "TelnetSave shell line: '%s'" % str(response.lower())
+	    if 'assword' in response.lower(): 
 	        print 'Sending password for the transfert'
 	        self.client.write(self.transfert_password + "\n")
-            if ('refused' in response) or ('failed' in response):
+            if ('refused' in response.lower()) or ('failed' in response.lower()):
                 print '*** TelnetSave *** Connection refused by the SSH or FTP Server :' + response
                 server_thread._Thread__stop()
                 self.client.close()
                 return False
 	    # dealing if the switch ask to add the SSH key on the switch
-	    elif 'authenticity' in response:
+	    elif 'authenticity' in response.lower():
 	        print 'Adding the SSH server key on the switch'
 	        self.client.write('yes' + "\n")
 
@@ -1569,7 +1572,13 @@ class FTPServer(threading.Thread):
 
 	def FTPquit(self, ftpd):
 		if os.path.isfile(self.file):
-		    print 'FTPServer : Configuration backup done to the file :' + self.file
+		    print 'FTPServer : Configuration backup done'
+		    if self.zipped == 'yes':
+		        zname = str(self.file) + '.zip'
+		        zbackup = zipfile.ZipFile(zname, "w")
+		        zbackup.write(name)
+		        zbackup.close()
+		        os.remove(self.file)
 		    self.server_queue.put('backup OK')
 		else:
 		    print '***FTPServer*** Unable to find the file:' + self.file
@@ -1581,9 +1590,15 @@ class FTPServer(threading.Thread):
 	def FTPcheck(self, ftpserver):
 		if not self.backupOK:
 		    if os.path.isfile(self.file):
-		        self.backupOK = True				
+			if self.zipped == 'yes':
+		            zname = str(self.file) + '.zip'
+		            zbackup = zipfile.ZipFile(zname, "w")
+		            zbackup.write(name)
+		            zbackup.close()
+		            os.remove(self.file)
+		        self.backupOK = True			
 			self.server_queue.put('backup OK')
-			print 'FTPServer : Configuration backup done to the file :' + self.file
+			print 'FTPServer : Configuration backup done'
 		    else:
 			ftpserver.CallLater(2, self.FTPcheck, (ftpserver))
 			print "FTPServer : waiting switch's connection..."
