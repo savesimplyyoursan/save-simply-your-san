@@ -1,4 +1,5 @@
 #!/usr/bin/env python
+# -*- coding: utf-8 -*-
 """
 Copyright (c) 2008-2009, Anthony FOIGNANT. All rights reserved.
 
@@ -88,6 +89,10 @@ def SaveSimplyyourSAN_CLI():
 	    options.debug = False
 	#initialising switch object
 	switch = SaveSimplyyourSAN.Switch(options.ip, options.user, options.password, options.switch, options.client, options.transfert, float(options.timeout), options.interface, options.nat, options.dir, debug=options.debug, known_hosts=options.known_hosts, server_key=options.server_key, server_key_type=options.server_key_type, zipped=options.zip)
+	# Calling the function for getting the configuration from a Mcdata switch
+	if (switch.type == "mcdata") and (not options.command) :
+	    if switch.GetMcdataConfig():
+		sys.exit(0)
 	if not switch.Connect(): 
 	    print "*** Problem during Connection to the swith "
 	    sys.exit(2)
@@ -115,11 +120,6 @@ def SaveSimplyyourSAN_CLI():
 		        sys.exit(2)
 	        switch.client.close()
 	        sys.exit(0)
-
-	    # Calling the function for getting the configuration from a Mcdata switch
-	    if switch.type == "mcdata":
-		if switch.GetMcdataConfig():
-		    sys.exit(0)
 	    elif (switch.type == "brocade") or (switch.type == "cisco"):
 		if not switch.interface:
 		    print 'The server will bind on this IP address : '+ str(socket.gethostbyname(socket.gethostname())) + " for the switch's IP :" + str(switch.address)
